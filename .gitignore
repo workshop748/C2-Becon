@@ -1,0 +1,38 @@
+# ── Rust build artifacts ──────────────────────────────────────────────────────
+rust/target/
+rust/Cargo.lock        # library crate — lock file not needed in VCS
+
+# ── CMake / build output ──────────────────────────────────────────────────────
+build/
+CMakeCache.txt
+CMakeFiles/
+cmake_install.cmake
+Makefile
+*.ninja
+.ninja_deps
+.ninja_log
+
+# ── Compiled binaries ─────────────────────────────────────────────────────────
+*.exe
+*.dll
+*.a
+*.lib
+*.o
+*.obj
+
+# ── Secrets — never commit these ─────────────────────────────────────────────
+config.local.h         # any local config override with real C2 URL / keys
+*.pem
+*.key
+*.pfx
+
+# ── OS noise ──────────────────────────────────────────────────────────────────
+.DS_Store
+Thumbs.db
+
+# ── Editor noise ─────────────────────────────────────────────────────────────
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
