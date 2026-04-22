@@ -1,19 +1,18 @@
-// src/anti_analysis.c
-// Mod 71: Anti-debug | Mod 73: Anti-VM / sandbox detection
+
 #include <windows.h>
 #include <intrin.h>
 #include <stdio.h>
 
-// -- Mod 71: Anti-debug checks ----------------------------------------
+
 // Returns TRUE if a debugger is detected
 BOOL anti_debug_check() {
-    // 1. IsDebuggerPresent (PEB->BeingDebugged)
+    //  IsDebuggerPresent (PEB->BeingDebugged)
     if (IsDebuggerPresent()) {
         printf("[!] anti_debug: IsDebuggerPresent() = TRUE\n");
         return TRUE;
     }
 
-    // 2. CheckRemoteDebuggerPresent (NtQueryInformationProcess)
+    //  CheckRemoteDebuggerPresent (NtQueryInformationProcess)
     BOOL remoteDebugger = FALSE;
     CheckRemoteDebuggerPresent(GetCurrentProcess(), &remoteDebugger);
     if (remoteDebugger) {
@@ -21,7 +20,7 @@ BOOL anti_debug_check() {
         return TRUE;
     }
 
-    // 3. NtGlobalFlag check (PEB offset 0x68 on x64, 0xBC on x86)
+    //  NtGlobalFlag check (PEB offset 0x68 on x64, 0xBC on x86)
     // If set to 0x70 (FLG_HEAP_ENABLE_TAIL_CHECK | FREE_CHECK | VALIDATE_PARAMS)
     // then a debugger created this process
 #ifdef _WIN64
@@ -31,16 +30,18 @@ BOOL anti_debug_check() {
     PPEB pPeb = (PPEB)__readfsdword(0x30);
     DWORD ntGlobalFlag = *(DWORD*)((PBYTE)pPeb + 0x68);
 #endif
-    if (ntGlobalFlag & 0x70) {
+    if (ntGlobalFlag == 0x70) {
         printf("[!] anti_debug: NtGlobalFlag = 0x%X (debugger heap flags)\n",
                ntGlobalFlag);
         return TRUE;
     }
 
+   
+
     return FALSE;
 }
 
-// -- Mod 73: Anti-VM / sandbox checks ---------------------------------
+
 // Returns TRUE if running inside a VM or sandbox
 BOOL anti_vm_check() {
     // 1. CPUID hypervisor bit (ECX bit 31 of leaf 1)
@@ -65,22 +66,52 @@ BOOL anti_vm_check() {
         printf("[!] anti_vm: Physical memory < 2 GB (VM?)\n");
         return TRUE;
     }
-
-    // 4. Check for VM-related registry keys
+    // checking the CPU for possible VItrual enviornment
+    SYSTEM_INFO SysInfo = {0};
+    GetSystemInfo(&SysInfo);
+    if (SysInfo.dwNumberOfProcessors < 2) {
+      printf("[!] anti_debug: Vritualization in sandbox detected\n");
+      return TRUE;
+    }
+    // Checking previously mounted USB devices
     HKEY hKey = NULL;
+    DWORD dwUsbNumber = 0;
+    DWORD dwRegErr = 0;
+    if ((dwRegErr = RegOpenKeyExA(HKEY_LOCAL_MACHINE,
+                                  "SYSTEM\\ControlSet001\\Enum\\USBSTOR", NULL,
+                                  KEY_READ, &hKey)) != ERROR_SUCCESS) {
+      printf("\n\t[!] RegOpenKeyExA Failed With Error : %d | 0x%0.8X \n",
+             dwRegErr, dwRegErr);
+    }
+
+    if ((dwRegErr = RegQueryInfoKeyA(hKey, NULL, NULL, NULL, &dwUsbNumber, NULL,
+                                     NULL, NULL, NULL, NULL, NULL, NULL)) !=
+        ERROR_SUCCESS) {
+      printf("\n\t[!] RegQueryInfoKeyA Failed With Error : %d | 0x%0.8X \n",
+             dwRegErr, dwRegErr);
+    }
+
+    // Less than 2 USBs previously mounted
+    if (dwUsbNumber < 2) {
+      // possibly a virtualized environment
+      printf("[!] anti_debug: Vritualization in sandbox detected\n");
+      return TRUE;
+    }
+    //  Check for VM-related registry keys
+    
     if (RegOpenKeyExA(HKEY_LOCAL_MACHINE,
-                      "SOFTWARE\\VMware, Inc.\\VMware Tools",
-                      0, KEY_READ, &hKey) == ERROR_SUCCESS) {
-        RegCloseKey(hKey);
-        printf("[!] anti_vm: VMware Tools registry key found\n");
-        return TRUE;
+                      "SOFTWARE\\VMware, Inc.\\VMware Tools", 0, KEY_READ,
+                      &hKey) == ERROR_SUCCESS) {
+      RegCloseKey(hKey);
+      printf("[!] anti_vm: VMware Tools registry key found\n");
+      return TRUE;
     }
     if (RegOpenKeyExA(HKEY_LOCAL_MACHINE,
-                      "SOFTWARE\\Oracle\\VirtualBox Guest Additions",
-                      0, KEY_READ, &hKey) == ERROR_SUCCESS) {
-        RegCloseKey(hKey);
-        printf("[!] anti_vm: VirtualBox registry key found\n");
-        return TRUE;
+                      "SOFTWARE\\Oracle\\VirtualBox Guest Additions", 0,
+                      KEY_READ, &hKey) == ERROR_SUCCESS) {
+      RegCloseKey(hKey);
+      printf("[!] anti_vm: VirtualBox registry key found\n");
+      return TRUE;
     }
 
     return FALSE;
