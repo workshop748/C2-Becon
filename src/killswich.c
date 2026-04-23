@@ -12,8 +12,8 @@ VOID killswitch_hard() {
   DeleteFileA(szPath);
 
   // zero the AES key in memory before exit
-  extern BYTE aes_key[];
-  SecureZeroMemory(aes_key, 32);
+  extern VOID comms_wipe_keys(void);
+ comms_wipe_keys();
 
   ExitProcess(0);
 }

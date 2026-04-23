@@ -1,13 +1,12 @@
 // include/evasion.h
-#pragma once
+#ifndef EVASION_H
+#define EVASION_H
 #include <windows.h>
 
-// Mod 105: AMSI bypass
-BOOL patch_amsi();
+BOOL unhook_ntdll(VOID);
+BOOL patch_amsi(VOID);
+BOOL patch_etw(VOID);
+BOOL ppid_spoof(DWORD parentPid, LPCSTR targetExe, PPROCESS_INFORMATION pPi);
+BOOL evasion_run(VOID);
 
-// Mod 110: ETW bypass
-BOOL patch_etw();
-
-// Mod 47: PPID spoofing
-BOOL ppid_spoof(DWORD parentPid, LPCSTR targetExe,
-                PPROCESS_INFORMATION pPi);
+#endif

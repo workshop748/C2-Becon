@@ -82,6 +82,7 @@ BOOL anti_vm_check() {
                                   KEY_READ, &hKey)) != ERROR_SUCCESS) {
       printf("\n\t[!] RegOpenKeyExA Failed With Error : %d | 0x%0.8X \n",
              dwRegErr, dwRegErr);
+             goto skip_usb;
     }
 
     if ((dwRegErr = RegQueryInfoKeyA(hKey, NULL, NULL, NULL, &dwUsbNumber, NULL,
@@ -89,20 +90,27 @@ BOOL anti_vm_check() {
         ERROR_SUCCESS) {
       printf("\n\t[!] RegQueryInfoKeyA Failed With Error : %d | 0x%0.8X \n",
              dwRegErr, dwRegErr);
+             RegCloseKey(hKey);
+             goto skip_usb;
     }
-
+RegCloseKey(hKey);
+hKey = NULL;
     // Less than 2 USBs previously mounted
     if (dwUsbNumber < 2) {
       // possibly a virtualized environment
       printf("[!] anti_debug: Vritualization in sandbox detected\n");
       return TRUE;
     }
+
+    skip_usb:
     //  Check for VM-related registry keys
     
     if (RegOpenKeyExA(HKEY_LOCAL_MACHINE,
                       "SOFTWARE\\VMware, Inc.\\VMware Tools", 0, KEY_READ,
                       &hKey) == ERROR_SUCCESS) {
-      RegCloseKey(hKey);
+     
+     
+                        RegCloseKey(hKey);
       printf("[!] anti_vm: VMware Tools registry key found\n");
       return TRUE;
     }

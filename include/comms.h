@@ -14,9 +14,6 @@ BOOL aes_encrypt_payload(PBYTE plain, DWORD plainLen,
 BOOL aes_decrypt_payload(PBYTE cipher, DWORD cipherLen,
                          PVOID* outPlain, DWORD* outLen);
 
-// NTDLL unhooking
-BOOL unhook_ntdll();
-
 // Main beacon POST to C2
 BOOL beacon_post(BYTE* payload, DWORD payloadLen,
                  BYTE** responseOut, DWORD* responseLenOut);
@@ -29,3 +26,4 @@ DWORD jitter(DWORD baseMs);
 
 // Get current machine IP address
 ULONG GetCurrentIpAddress();
+VOID comms_wipe_keys(VOID);
