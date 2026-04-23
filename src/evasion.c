@@ -1,6 +1,7 @@
 // src/evasion.c
 // Mod 83/84: NTDLL unhooking | Mod 105/110: AMSI/ETW patching | Mod 47: PPID spoofing
 #include <windows.h>
+#include "ntdefs.h"
 #include <stdio.h>
 #include<intrin.h>
 #define NTDLL_NAME "NTDLL.DLL"
