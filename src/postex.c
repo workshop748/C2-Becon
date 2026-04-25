@@ -1,7 +1,6 @@
 
 #include <windows.h>
 #include <stdio.h>
-#include <shlwapi.h>
 #include "comms.h"
 
 #define MAX_LOOT_FILES 10

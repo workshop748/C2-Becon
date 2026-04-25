@@ -1,7 +1,7 @@
 
 #include <windows.h>
 #include <stdio.h>
-#include <winternl.h>
+#include "ntdefs.h"
 
 // NtUnmapViewOfSection typedef — resolved dynamically
 typedef NTSTATUS(NTAPI* fnNtUnmapViewOfSection)(HANDLE, PVOID);

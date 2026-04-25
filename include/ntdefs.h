@@ -21,7 +21,7 @@ typedef struct _UNICODE_STRING {
 } UNICODE_STRING, *PUNICODE_STRING;
 #endif
 
-// ── LDR_DATA_TABLE_ENTRY (full) ─────────────────────────────────
+
 typedef struct _LDR_DATA_TABLE_ENTRY {
     LIST_ENTRY  InLoadOrderLinks;
     LIST_ENTRY  InMemoryOrderLinks;
@@ -50,7 +50,7 @@ typedef struct _PEB_LDR_DATA {
     LIST_ENTRY  InInitializationOrderModuleList;
 } PEB_LDR_DATA, *PPEB_LDR_DATA;
 
-// ── PEB (minimal — only the fields we access) ───────────────────
+
 typedef struct _PEB {
     BOOLEAN InheritedAddressSpace;
     BOOLEAN ReadImageFileExecOptions;
@@ -61,8 +61,12 @@ typedef struct _PEB {
     PPEB_LDR_DATA Ldr;
     // ... many more fields follow but we don't need them
 } PEB, *PPEB;
+typedef struct _USTRING {
+  USHORT Length;
+  USHORT MaximumLength;
+  PCHAR Buffer;
+} USTRING, *PUSTRING;
 
-// ── OBJECT_ATTRIBUTES (needed by Nt* function typedefs) ─────────
 #ifndef _OBJECT_ATTRIBUTES_DEFINED
 #define _OBJECT_ATTRIBUTES_DEFINED
 typedef struct _OBJECT_ATTRIBUTES {
@@ -75,7 +79,7 @@ typedef struct _OBJECT_ATTRIBUTES {
 } OBJECT_ATTRIBUTES, *POBJECT_ATTRIBUTES;
 #endif
 
-// ── NT status / calling convention ──────────────────────────────
+
 #ifndef NTSTATUS
 typedef LONG NTSTATUS;
 #endif
@@ -86,6 +90,9 @@ typedef LONG NTSTATUS;
 
 #ifndef NT_SUCCESS
 #define NT_SUCCESS(Status) (((NTSTATUS)(Status)) >= 0)
+#endif
+#ifndef STATUS_SUCCESS
+#define STATUS_SUCCESS ((NTSTATUS)0x00000000)
 #endif
 
 #endif // _NTDEF_CUSTOM_

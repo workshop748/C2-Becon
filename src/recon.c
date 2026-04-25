@@ -6,6 +6,7 @@
 #include <lm.h>
 #include <stdio.h>
 #include "anti_analysis.h"
+#include "ntdefs.h"
 
 #pragma comment(lib, "ws2_32.lib")
 #pragma comment(lib, "iphlpapi.lib")
