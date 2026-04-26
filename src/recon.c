@@ -178,7 +178,7 @@ BOOL recon_serialize(IN PCHECKIN_INFO pInfo,
     if (!buf) return FALSE;
 
     // build ports array string
-    CHAR ports[256] = "[";
+    CHAR ports[512] = "[";
     for (DWORD i = 0; i < pInfo->port_count; i++) {
         CHAR tmp[16];
         sprintf_s(tmp, sizeof(tmp), "%lu", pInfo->open_ports[i]);
