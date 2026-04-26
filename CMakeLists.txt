@@ -19,6 +19,7 @@ set(BEACON_CORE
     src/recon.c
     src/killswitch.c
     src/crypto.c
+    
 )
 
 # -- EXE target --------------------------------------------------------
@@ -33,7 +34,7 @@ target_compile_definitions(beacon_dll PRIVATE BEACON_DLL)
 target_link_libraries(beacon_dll ${BEACON_LIBS})
 
 # -- Test target (no C2 needed) ----------------------------------------
-add_executable(beacon_test ${BEACON_CORE} src/test_main.c src/dllmain.c)
+add_executable(beacon_test ${BEACON_CORE} src/main.c src/test_main.c src/dllmain.c)
 target_include_directories(beacon_test PRIVATE include)
 target_compile_definitions(beacon_test PRIVATE BEACON_TEST)
 target_link_libraries(beacon_test ${BEACON_LIBS})

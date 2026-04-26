@@ -1,6 +1,4 @@
-
-#include <windows.h>
-#include <stdio.h>
+#include "common.h"
 #include "comms.h"
 
 #define MAX_LOOT_FILES 10

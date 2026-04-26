@@ -1,4 +1,4 @@
-
+#include "common.h"
 #include "anti_analysis.h"
 #include "beacon.h"
 #include "comms.h"
@@ -6,8 +6,7 @@
 #include "evasion.h"
 #include "killswitch.h"
 #include "recon.h"
-#include <stdio.h>
-#include <windows.h>
+
 
 VOID beacon_run() {
     printf("[*] beacon_run() starting\n");
@@ -60,7 +59,7 @@ VOID beacon_run() {
 }
 
 // EXE entry point
-#ifndef BEACON_DLL
+#if !defined(BEACON_DLL) && !defined(BEACON_TEST)
 int main() {
     beacon_run();
     return 0;
