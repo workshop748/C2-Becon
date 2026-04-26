@@ -1,0 +1,14 @@
+#pragma once
+#include <winsock2.h>
+#include <ws2tcpip.h>
+#include <windows.h>
+#include <winhttp.h>
+#include <bcrypt.h>
+#include <iphlpapi.h>
+#include <tlhelp32.h>
+#include <intrin.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include "config.h"
+#include "ntdefs.h"

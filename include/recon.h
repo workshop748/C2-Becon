@@ -1,13 +1,12 @@
-// include/recon.h
 #pragma once
-#include <windows.h>
+#include "common.h"
 
 #define MAX_PORTS     64
 #define MAX_SERVICES  32
 #define MAX_SVC_LEN   64
 
 typedef struct _CHECKIN_INFO {
-    // -- Required by decision engine --
+    
     CHAR  os[32];                                  // "Windows", "Linux", "macOS"
     CHAR  privilege_level[16];                     // "admin", "user", "system"
     DWORD open_ports[MAX_PORTS];
@@ -15,14 +14,14 @@ typedef struct _CHECKIN_INFO {
     CHAR  running_services[MAX_SERVICES][MAX_SVC_LEN];
     DWORD service_count;
 
-    // -- Nice-to-have boolean flags --
+    
     BOOL  domain_joined;
     BOOL  active_directory;
     BOOL  antivirus_running;
     BOOL  lsass_accessible;
     BOOL  ntlm_auth;
 
-    // -- Beacon metadata --
+    
     CHAR  hostname[256];
     CHAR  username[256];
     CHAR  os_version[128];                         // "Windows 10.0 Build 19045"

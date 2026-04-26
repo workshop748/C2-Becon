@@ -2,10 +2,10 @@
 #ifndef ANTI_ANALYSIS_H
 #define ANTI_ANALYSIS_H
 
-#include <windows.h>
+#include "common.h"
 
 BOOL anti_debug_check(VOID);
 BOOL anti_vm_check(VOID);
-BOOL anti_analysis_run(VOID);
+BOOL anti_analysis_run(BOOL bEnforce);
 
 #endif

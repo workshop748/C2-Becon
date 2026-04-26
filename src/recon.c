@@ -1,6 +1,6 @@
 #include "recon.h"
-#include <windows.h>
 #include <winsock2.h>
+#include <windows.h>
 #include <tlhelp32.h>
 #include <iphlpapi.h>
 #include <lm.h>
