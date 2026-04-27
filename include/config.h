@@ -7,7 +7,7 @@
 
 /* ── Callback ─────────────────────────────────────────────────────── */
 #ifndef CALLBACK_HOST
-#define CALLBACK_HOST L"127.0.0.1"
+#define CALLBACK_HOST L"192.168.1.69"
 #endif
 #ifndef CALLBACK_PORT
 #define CALLBACK_PORT 8443

