@@ -22,6 +22,13 @@ BOOL aes_encrypt_payload(PBYTE plain, DWORD plainLen, PVOID *outCipher,
 BOOL aes_decrypt_payload(PBYTE cipher, DWORD cipherLen, PVOID *outPlain,
                          DWORD *outLen);
 
+// XOR decode — in-place single-byte XOR for config string obfuscation
+VOID xor_decode(BYTE *buf, DWORD len, BYTE key);
+
+// Session key — swap the active AES key/IV at runtime
+BOOL crypto_set_session_key(const BYTE *key, DWORD keyLen,
+                            const BYTE *iv, DWORD ivLen);
+
 // Key wipe — call before beacon exits
 VOID crypto_wipe_keys(VOID);
 

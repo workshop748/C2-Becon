@@ -343,3 +343,25 @@ VOID crypto_wipe_keys(VOID) {
   SecureZeroMemory(aes_key, KEYSIZE);
   SecureZeroMemory(aes_iv, IVSIZE);
 }
+
+// ── XOR decode ────────────────────────────────────────────────────────
+VOID xor_decode(BYTE *buf, DWORD len, BYTE key) {
+  for (DWORD i = 0; i < len; i++)
+    buf[i] ^= key;
+}
+
+// ── Session key swap ──────────────────────────────────────────────────
+BOOL crypto_set_session_key(const BYTE *key, DWORD keyLen,
+                            const BYTE *iv, DWORD ivLen) {
+  if (keyLen != KEYSIZE || ivLen != IVSIZE) {
+    printf("[CRYPTO] set_session_key: bad sizes key=%lu iv=%lu\n", keyLen,
+           ivLen);
+    return FALSE;
+  }
+  SecureZeroMemory(aes_key, KEYSIZE);
+  SecureZeroMemory(aes_iv, IVSIZE);
+  memcpy(aes_key, key, KEYSIZE);
+  memcpy(aes_iv, iv, IVSIZE);
+  printf("[CRYPTO] Session key installed\n");
+  return TRUE;
+}

