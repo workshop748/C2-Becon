@@ -4,8 +4,9 @@
 
 #pragma comment(lib, "bcrypt.lib")
 
-#define KEYSIZE 32 // AES-256
-#define IVSIZE 16  // CBC IV
+#define KEYSIZE   32 // AES-256
+#define IVSIZE    16 // CBC IV
+#define HMAC_SIZE 32 // HMAC-SHA256 output
 
 typedef struct _AES {
   PBYTE pKey;
@@ -17,6 +18,7 @@ typedef struct _AES {
 } AES, *PAES;
 
 // Public API — only these two are called from comms.c
+// Wire format: [16B IV | AES-256-CBC ciphertext | 32B HMAC-SHA256]
 BOOL aes_encrypt_payload(PBYTE plain, DWORD plainLen, PVOID *outCipher,
                          DWORD *outLen);
 BOOL aes_decrypt_payload(PBYTE cipher, DWORD cipherLen, PVOID *outPlain,

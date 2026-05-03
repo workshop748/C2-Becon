@@ -1,8 +1,11 @@
 # C2 Beacon ↔ TeamServer JSON Schema
 
-All payloads are AES-256-GCM encrypted on the wire.  
-Wire format: `[nonce 12B][ciphertext + GCM tag 16B]`  
+All payloads are AES-256-CBC encrypted on the wire.  
+Wire format: `[IV 16B][ciphertext (PKCS7 padded)]`  
 The JSON below is the **plaintext** inside that envelope.
+
+Session keys are derived via HKDF-SHA256 from a per-build master secret
+(salt = agent_id, ikm = master_secret).
 
 ---
 
