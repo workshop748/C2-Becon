@@ -32,6 +32,7 @@ add_library(beacon_dll SHARED ${BEACON_CORE} src/main.c src/dllmain.c)
 target_include_directories(beacon_dll PRIVATE include)
 target_compile_definitions(beacon_dll PRIVATE BEACON_DLL)
 target_link_libraries(beacon_dll ${BEACON_LIBS})
+set_target_properties(beacon_dll PROPERTIES PREFIX "" OUTPUT_NAME "beacon")
 
 # -- Test target (no C2 needed) ----------------------------------------
 add_executable(beacon_test ${BEACON_CORE} src/main.c src/test_main.c src/dllmain.c)
