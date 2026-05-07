@@ -185,7 +185,7 @@ BOOL recon_serialize(IN PCHECKIN_INFO pInfo,
     strcat_s(ports, sizeof(ports), "]");
 
     // build services array string
-    CHAR svcs[512] = "[";
+    CHAR svcs[4096] = "[";
     for (DWORD i = 0; i < pInfo->service_count; i++) {
         strcat_s(svcs, sizeof(svcs), "\"");
         strcat_s(svcs, sizeof(svcs), pInfo->running_services[i]);

