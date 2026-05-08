@@ -2,16 +2,16 @@
 // Build target: beacon_test (see CMakeLists.txt)
 // Compile flag: BEACON_TEST
 
-#include \"anti_analysis.h\"
-#include \"beacon.h\"
-#include \"common.h\"
-#include \"comms.h\"
-#include \"crypto.h\"
-#include \"evasion.h\"
-#include \"killswitch.h\"
-#include \"persist.h\"
-#include \"postex.h\"
-#include \"recon.h\"
+#include "anti_analysis.h"
+#include "beacon.h"
+#include "common.h"
+#include "comms.h"
+#include "crypto.h"
+#include "evasion.h"
+#include "killswitch.h"
+#include "persist.h"
+#include "postex.h"
+#include "recon.h"
 // ============================================================
 // COMMS TEST — call this explicitly
 // ============================================================
